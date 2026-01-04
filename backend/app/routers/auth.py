@@ -45,8 +45,11 @@ async def google_login(request: Request):
     state = secrets.token_urlsafe(32)
     oauth_state_cache.set(state, {"created": datetime.utcnow().isoformat()}, ttl_seconds=STATE_EXPIRATION_SECONDS)
 
-    # Build the callback URL
-    redirect_uri = f"{request.base_url}auth/google/callback"
+    # Build the callback URL (force HTTPS in production - Railway proxy uses HTTP internally)
+    base_url = str(request.base_url)
+    if settings.environment == "production":
+        base_url = base_url.replace("http://", "https://")
+    redirect_uri = f"{base_url}auth/google/callback"
 
     return await oauth.google.authorize_redirect(request, redirect_uri, state=state)
 
