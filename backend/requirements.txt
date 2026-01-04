@@ -22,6 +22,7 @@ yt-dlp>=2024.11.4
 
 # AI
 anthropic>=0.18.1
+replicate>=0.25.0
 
 # Telegram
 python-telegram-bot>=21.0
