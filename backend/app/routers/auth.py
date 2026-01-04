@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Annotated
 
 from authlib.integrations.starlette_client import OAuth
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +15,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.dependencies import CurrentUser
 from app.models.user import User
-from app.schemas.user import UserResponse, TokenResponse
+from app.schemas.user import UserResponse
 from app.utils.auth import create_access_token
 from app.utils.cache import oauth_state_cache
 
@@ -127,26 +127,10 @@ async def google_callback(
     # Create JWT token
     access_token = create_access_token(user.id, user.email)
 
-    # Redirect to frontend with token in URL (cookie will be set via /auth/set-cookie endpoint)
-    # This avoids cross-site cookie blocking on redirects
+    # Redirect to frontend with token - frontend will store in localStorage
+    # This is the standard pattern for SPAs with separate API domains
     frontend_url = settings.frontend_url
     return RedirectResponse(url=f"{frontend_url}/auth/callback?token={access_token}")
-
-
-@router.post("/set-cookie")
-async def set_auth_cookie(response: Response, token: str):
-    """Set the auth cookie from a token (used after OAuth redirect)."""
-    is_production = settings.environment == "production"
-    response.set_cookie(
-        key="auth_token",
-        value=token,
-        httponly=True,
-        secure=is_production,
-        samesite="none" if is_production else "lax",
-        max_age=settings.jwt_expiration_hours * 3600,
-        path="/",
-    )
-    return {"status": "ok"}
 
 
 @router.get("/me", response_model=UserResponse)
@@ -156,13 +140,6 @@ async def get_current_user_info(current_user: CurrentUser):
 
 
 @router.post("/logout")
-async def logout(response: Response):
-    """Logout - clear the auth cookie."""
-    is_production = settings.environment == "production"
-    response.delete_cookie(
-        key="auth_token",
-        path="/",
-        secure=is_production,
-        samesite="none" if is_production else "lax",
-    )
+async def logout():
+    """Logout endpoint - client handles token removal from localStorage."""
     return {"message": "Logged out successfully"}

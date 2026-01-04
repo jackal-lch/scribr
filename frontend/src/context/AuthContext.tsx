@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
-import client, { API_URL } from '../api/client';
+import client, { API_URL, getToken, removeToken } from '../api/client';
 
 interface User {
   id: string;
@@ -21,11 +21,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Auth is handled via HTTP-only cookies
-    // Try to get current user - if cookie exists and is valid, we'll get the user
+    // Check if we have a token, then validate it
+    const token = getToken();
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+
     client.get('/auth/me')
       .then((res) => setUser(res.data))
-      .catch(() => setUser(null))
+      .catch(() => {
+        removeToken(); // Token invalid, remove it
+        setUser(null);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -33,12 +41,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     window.location.href = `${API_URL}/auth/google`;
   };
 
-  const logout = async () => {
-    try {
-      await client.post('/auth/logout');
-    } catch {
-      // Ignore errors, still clear local state
-    }
+  const logout = () => {
+    removeToken();
     setUser(null);
     window.location.href = '/login';
   };

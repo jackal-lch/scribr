@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import client from '../api/client';
+import { setToken } from '../api/client';
 
 export default function AuthCallback() {
   const navigate = useNavigate();
@@ -10,16 +10,9 @@ export default function AuthCallback() {
     const token = searchParams.get('token');
 
     if (token) {
-      // Set the cookie via API call (avoids cross-site cookie blocking)
-      client.post('/auth/set-cookie', null, { params: { token } })
-        .then(() => {
-          // Cookie is now set, redirect to dashboard
-          navigate('/', { replace: true });
-        })
-        .catch(() => {
-          // If setting cookie fails, redirect to login
-          navigate('/login', { replace: true });
-        });
+      // Store token in localStorage and redirect to dashboard
+      setToken(token);
+      navigate('/', { replace: true });
     } else {
       // No token, redirect to login
       navigate('/login', { replace: true });
