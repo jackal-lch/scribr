@@ -132,12 +132,15 @@ async def google_callback(
     response = RedirectResponse(url=f"{frontend_url}/auth/callback")
 
     # Set secure cookie with the token
+    # Production: SameSite=None + Secure for cross-origin (different domains)
+    # Development: SameSite=Lax for same-origin (localhost)
+    is_production = settings.environment == "production"
     response.set_cookie(
         key="auth_token",
         value=access_token,
         httponly=True,
-        secure=settings.environment == "production",  # HTTPS only in production
-        samesite="lax",
+        secure=is_production,
+        samesite="none" if is_production else "lax",
         max_age=settings.jwt_expiration_hours * 3600,
         path="/",
     )
@@ -154,10 +157,11 @@ async def get_current_user_info(current_user: CurrentUser):
 @router.post("/logout")
 async def logout(response: Response):
     """Logout - clear the auth cookie."""
+    is_production = settings.environment == "production"
     response.delete_cookie(
         key="auth_token",
         path="/",
-        secure=settings.environment == "production",
-        samesite="lax",
+        secure=is_production,
+        samesite="none" if is_production else "lax",
     )
     return {"message": "Logged out successfully"}
