@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
-import client from '../api/client';
+import client, { API_URL } from '../api/client';
 
 interface User {
   id: string;
@@ -30,7 +30,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = () => {
-    window.location.href = `${import.meta.env.VITE_API_URL}/auth/google`;
+    window.location.href = `${API_URL}/auth/google`;
   };
 
   const logout = async () => {
