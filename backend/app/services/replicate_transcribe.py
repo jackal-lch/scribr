@@ -181,7 +181,7 @@ async def transcribe_audio(video_id: str, language: Optional[str] = None) -> Opt
 
         if not audio_path:
             logger.error(f"Failed to download audio for {video_id}")
-            return None
+            raise TranscriptionError("Failed to download audio from YouTube. The video may be restricted or unavailable.")
 
         file_size = os.path.getsize(audio_path)
         logger.info(f"Downloaded audio: {audio_path} ({file_size / 1024 / 1024:.1f} MB)")
