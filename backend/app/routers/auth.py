@@ -127,25 +127,26 @@ async def google_callback(
     # Create JWT token
     access_token = create_access_token(user.id, user.email)
 
-    # Redirect to frontend with token in HTTP-only cookie
+    # Redirect to frontend with token in URL (cookie will be set via /auth/set-cookie endpoint)
+    # This avoids cross-site cookie blocking on redirects
     frontend_url = settings.frontend_url
-    response = RedirectResponse(url=f"{frontend_url}/auth/callback")
+    return RedirectResponse(url=f"{frontend_url}/auth/callback?token={access_token}")
 
-    # Set secure cookie with the token
-    # Production: SameSite=None + Secure for cross-origin (different domains)
-    # Development: SameSite=Lax for same-origin (localhost)
+
+@router.post("/set-cookie")
+async def set_auth_cookie(response: Response, token: str):
+    """Set the auth cookie from a token (used after OAuth redirect)."""
     is_production = settings.environment == "production"
     response.set_cookie(
         key="auth_token",
-        value=access_token,
+        value=token,
         httponly=True,
         secure=is_production,
         samesite="none" if is_production else "lax",
         max_age=settings.jwt_expiration_hours * 3600,
         path="/",
     )
-
-    return response
+    return {"status": "ok"}
 
 
 @router.get("/me", response_model=UserResponse)

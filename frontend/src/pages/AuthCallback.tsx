@@ -1,14 +1,30 @@
 import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import client from '../api/client';
 
 export default function AuthCallback() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   useEffect(() => {
-    // Auth token is now set as HTTP-only cookie by the backend
-    // Just redirect to dashboard - the cookie will be sent automatically
-    navigate('/', { replace: true });
-  }, [navigate]);
+    const token = searchParams.get('token');
+
+    if (token) {
+      // Set the cookie via API call (avoids cross-site cookie blocking)
+      client.post('/auth/set-cookie', null, { params: { token } })
+        .then(() => {
+          // Cookie is now set, redirect to dashboard
+          navigate('/', { replace: true });
+        })
+        .catch(() => {
+          // If setting cookie fails, redirect to login
+          navigate('/login', { replace: true });
+        });
+    } else {
+      // No token, redirect to login
+      navigate('/login', { replace: true });
+    }
+  }, [navigate, searchParams]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
