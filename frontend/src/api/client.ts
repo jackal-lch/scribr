@@ -13,11 +13,11 @@ const client = axios.create({
 // Auth is handled via HTTP-only cookies (withCredentials: true)
 // No need to manually attach tokens
 
-// Handle 401 responses
+// Handle 401 responses - redirect to login if not already there
 client.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !window.location.pathname.includes('/login')) {
       window.location.href = '/login';
     }
     return Promise.reject(error);
