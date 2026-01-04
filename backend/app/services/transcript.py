@@ -84,6 +84,9 @@ def _format_timestamp(seconds: float) -> str:
 
 def _extract_caption_sync(video_id: str) -> Optional[TranscriptResult]:
     """Synchronous function to extract captions using yt-dlp."""
+    from app.config import get_settings
+    settings = get_settings()
+
     video_url = f"https://www.youtube.com/watch?v={video_id}"
 
     ydl_opts = {
@@ -96,6 +99,10 @@ def _extract_caption_sync(video_id: str) -> Optional[TranscriptResult]:
         'subtitleslangs': ['en', 'en-US', 'en-GB', 'zh', 'zh-Hans', 'zh-Hant', 'zh-TW', 'zh-HK', 'ja', 'ko'],
         'subtitlesformat': 'json3',
     }
+
+    # Add proxy if configured
+    if settings.proxy_url:
+        ydl_opts['proxy'] = settings.proxy_url
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

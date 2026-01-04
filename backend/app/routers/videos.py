@@ -33,8 +33,10 @@ from app.schemas.video import (
 )
 from app.services.youtube_api import get_channel_videos
 from app.services.transcript import extract_transcript, extract_transcript_caption_only, TranscriptionError
+from app.config import get_settings
 
 router = APIRouter()
+settings = get_settings()
 
 
 def strip_timestamps(content: str) -> str:
@@ -364,6 +366,10 @@ async def download_audio(
         }],
     }
 
+    # Add proxy if configured
+    if settings.proxy_url:
+        ydl_opts['proxy'] = settings.proxy_url
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([f"https://www.youtube.com/watch?v={youtube_video_id}"])
@@ -686,6 +692,10 @@ async def prepare_all_audio(
                         'preferredquality': '64',
                     }],
                 }
+
+                # Add proxy if configured
+                if settings.proxy_url:
+                    ydl_opts['proxy'] = settings.proxy_url
 
                 try:
                     # Run yt-dlp in thread pool to not block

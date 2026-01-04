@@ -48,6 +48,9 @@ class TranscriptionError(Exception):
 
 def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
     """Download audio from YouTube video using yt-dlp."""
+    from app.config import get_settings
+    settings = get_settings()
+
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
 
@@ -64,6 +67,10 @@ def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
             'preferredquality': '64',  # Low quality is fine for speech
         }],
     }
+
+    # Add proxy if configured
+    if settings.proxy_url:
+        ydl_opts['proxy'] = settings.proxy_url
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

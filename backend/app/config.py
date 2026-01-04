@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # Transcription provider: "siliconflow" or "replicate"
     transcription_provider: str = "replicate"
 
+    # Proxy for yt-dlp (to bypass YouTube bot detection on cloud servers)
+    # Format: http://user:pass@host:port or socks5://user:pass@host:port
+    proxy_url: str = ""
+
     # Redis (optional - falls back to in-memory if not configured)
     redis_url: str = ""
 
