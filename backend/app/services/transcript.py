@@ -1,0 +1,264 @@
+"""
+Transcript extraction service.
+Tries YouTube captions first (free, instant), falls back to AI transcription.
+Supports multiple AI providers: SiliconFlow, Replicate.
+"""
+import asyncio
+import logging
+from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+
+import yt_dlp
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class TranscriptionError(Exception):
+    """Exception raised when transcription fails with a specific error."""
+    pass
+
+
+async def _get_ai_transcription(video_id: str, provider: str = None) -> 'AudioTranscriptResult':
+    """
+    Get AI transcription using the specified or configured provider.
+    Supports: siliconflow, replicate
+
+    Raises TranscriptionError on failure.
+    """
+    settings = get_settings()
+    if not provider:
+        provider = settings.transcription_provider.lower()
+    else:
+        provider = provider.lower()
+
+    logger.info(f"Using AI transcription provider: {provider}")
+
+    if provider == "replicate":
+        from app.services.replicate_transcribe import transcribe_audio, TranscriptionError as ReplicateError
+        try:
+            return await transcribe_audio(video_id)
+        except ReplicateError as e:
+            raise TranscriptionError(str(e))
+    elif provider == "siliconflow":
+        from app.services.siliconflow_transcribe import transcribe_audio, TranscriptionError as SiliconFlowError
+        try:
+            return await transcribe_audio(video_id)
+        except SiliconFlowError as e:
+            raise TranscriptionError(str(e))
+    else:
+        raise TranscriptionError(f"Unknown transcription provider: {provider}")
+
+
+# Import for type hints only
+from app.services.siliconflow_transcribe import AudioTranscriptResult
+
+# Thread pool for running yt-dlp (which is synchronous)
+_executor = ThreadPoolExecutor(max_workers=2)
+
+
+class TranscriptResult:
+    def __init__(
+        self,
+        content: str,
+        language: str,
+        word_count: int,
+        method: str = "caption",  # "caption" for YouTube CC, "ai" for SiliconFlow
+    ):
+        self.content = content
+        self.language = language
+        self.word_count = word_count
+        self.method = method
+
+
+def _format_timestamp(seconds: float) -> str:
+    """Convert seconds to HH:MM:SS format."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _extract_caption_sync(video_id: str) -> Optional[TranscriptResult]:
+    """Synchronous function to extract captions using yt-dlp."""
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+    ydl_opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'skip_download': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        # Support multiple languages
+        'subtitleslangs': ['en', 'en-US', 'en-GB', 'zh', 'zh-Hans', 'zh-Hant', 'zh-TW', 'zh-HK', 'ja', 'ko'],
+        'subtitlesformat': 'json3',
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+
+            if not info:
+                return None
+
+            # Try to get subtitles (manual first, then automatic)
+            subtitles = info.get('subtitles', {})
+            automatic_captions = info.get('automatic_captions', {})
+
+            # Priority order for languages
+            lang_priority = [
+                'en', 'en-US', 'en-GB',
+                'zh', 'zh-Hans', 'zh-Hant', 'zh-TW', 'zh-HK',
+                'ja', 'ko'
+            ]
+
+            sub_data = None
+            language = 'unknown'
+
+            # Check manual subtitles first
+            for lang in lang_priority:
+                if lang in subtitles:
+                    sub_info = subtitles[lang]
+                    for fmt in sub_info:
+                        if fmt.get('ext') == 'json3':
+                            sub_data = fmt
+                            language = lang
+                            break
+                    if sub_data:
+                        break
+
+            # Fall back to automatic captions
+            if not sub_data:
+                for lang in lang_priority + ['en-orig']:
+                    if lang in automatic_captions:
+                        sub_info = automatic_captions[lang]
+                        for fmt in sub_info:
+                            if fmt.get('ext') == 'json3':
+                                sub_data = fmt
+                                language = lang
+                                break
+                        if sub_data:
+                            break
+
+            if not sub_data:
+                return None
+
+            # Download the subtitle content
+            sub_url = sub_data.get('url')
+            if not sub_url:
+                return None
+
+            import urllib.request
+            import json
+
+            with urllib.request.urlopen(sub_url, timeout=30) as response:
+                sub_content = json.loads(response.read().decode('utf-8'))
+
+            # Parse json3 format and build transcript
+            events = sub_content.get('events', [])
+            transcript_lines = []
+            full_text_parts = []
+
+            for event in events:
+                if 'segs' not in event:
+                    continue
+
+                start_time = event.get('tStartMs', 0) / 1000
+                text_parts = []
+
+                for seg in event['segs']:
+                    text = seg.get('utf8', '')
+                    if text and text.strip():
+                        text_parts.append(text)
+
+                if text_parts:
+                    text = ''.join(text_parts).strip()
+                    if text:
+                        timestamp = _format_timestamp(start_time)
+                        transcript_lines.append(f"[{timestamp}] {text}")
+                        full_text_parts.append(text)
+
+            if not transcript_lines:
+                return None
+
+            content = '\n'.join(transcript_lines)
+            full_text = ' '.join(full_text_parts)
+            word_count = len(full_text.split())
+
+            return TranscriptResult(
+                content=content,
+                language=language,
+                word_count=word_count,
+                method="caption",
+            )
+
+    except Exception as e:
+        logger.error(f"Error extracting captions for {video_id}: {e}")
+        return None
+
+
+async def extract_transcript(
+    video_id: str,
+    use_ai_fallback: bool = True,
+    provider: str = None,
+) -> Optional[TranscriptResult]:
+    """
+    Extract transcript from a YouTube video.
+
+    First tries YouTube captions (free, instant).
+    If no captions and use_ai_fallback=True, uses AI transcription.
+
+    Args:
+        video_id: YouTube video ID
+        use_ai_fallback: Whether to use AI transcription if no captions available
+        provider: AI provider to use ("replicate" or "siliconflow")
+
+    Returns:
+        TranscriptResult object or None if no transcript available
+    """
+    # Try YouTube captions first
+    logger.info(f"Attempting caption extraction for {video_id}")
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(_executor, _extract_caption_sync, video_id)
+
+    if result:
+        logger.info(f"Caption extraction successful for {video_id} ({result.method})")
+        return result
+
+    # No captions available, try AI transcription
+    if use_ai_fallback:
+        logger.info(f"No captions found for {video_id}, trying AI transcription")
+        # Let TranscriptionError propagate up
+        ai_result = await _get_ai_transcription(video_id, provider=provider)
+
+        return TranscriptResult(
+            content=ai_result.content,
+            language=ai_result.language,
+            word_count=ai_result.word_count,
+            method=ai_result.method,
+        )
+
+    logger.warning(f"No transcript available for {video_id}")
+    return None
+
+
+async def extract_transcript_caption_only(video_id: str) -> Optional[TranscriptResult]:
+    """
+    Extract transcript using only YouTube captions (no AI fallback).
+    Use this for bulk extraction to avoid using AI quota.
+    Returns None if no captions available (does not raise error).
+    """
+    # Try YouTube captions first
+    logger.info(f"Attempting caption-only extraction for {video_id}")
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(_executor, _extract_caption_sync, video_id)
+
+    if result:
+        logger.info(f"Caption extraction successful for {video_id}")
+        return result
+
+    logger.info(f"No captions available for {video_id}")
+    return None

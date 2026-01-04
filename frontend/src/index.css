@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+@keyframes progress-slide {
+  0% {
+    left: -25%;
+  }
+  100% {
+    left: 100%;
+  }
+}
