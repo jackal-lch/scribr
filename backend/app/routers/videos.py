@@ -503,6 +503,10 @@ async def extract_video_transcript(
     except TranscriptionError as e:
         video.transcript_status = "failed"
         video.transcript_error = str(e)
+    except Exception as e:
+        # Catch any unexpected errors to prevent stuck "extracting" status
+        video.transcript_status = "failed"
+        video.transcript_error = f"Unexpected error: {str(e)[:200]}"
 
     await db.commit()
     await db.refresh(video)
@@ -839,29 +843,34 @@ async def extract_all_channel_transcripts(
         video.transcript_status = "extracting"
         await db.commit()
 
-        # Extract transcript (use AI fallback only if use_ai is True)
-        if use_ai:
-            transcript_result = await extract_transcript(video.youtube_video_id, provider=provider)
-        else:
-            transcript_result = await extract_transcript_caption_only(video.youtube_video_id)
-
-        if transcript_result:
-            transcript = Transcript(
-                video_id=video.id,
-                content=transcript_result.content,
-                language=transcript_result.language,
-                word_count=transcript_result.word_count,
-                method=transcript_result.method,
-            )
-            db.add(transcript)
-            video.has_transcript = True
-            video.transcript_status = "completed"
-            if transcript_result.method == "ai":
-                extracted_ai += 1
+        try:
+            # Extract transcript (use AI fallback only if use_ai is True)
+            if use_ai:
+                transcript_result = await extract_transcript(video.youtube_video_id, provider=provider)
             else:
-                extracted += 1
-        else:
+                transcript_result = await extract_transcript_caption_only(video.youtube_video_id)
+
+            if transcript_result:
+                transcript = Transcript(
+                    video_id=video.id,
+                    content=transcript_result.content,
+                    language=transcript_result.language,
+                    word_count=transcript_result.word_count,
+                    method=transcript_result.method,
+                )
+                db.add(transcript)
+                video.has_transcript = True
+                video.transcript_status = "completed"
+                if transcript_result.method == "ai":
+                    extracted_ai += 1
+                else:
+                    extracted += 1
+            else:
+                video.transcript_status = "failed"
+                failed += 1
+        except Exception as e:
             video.transcript_status = "failed"
+            video.transcript_error = str(e)[:200]
             failed += 1
 
         await db.commit()
