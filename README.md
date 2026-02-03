@@ -1,22 +1,18 @@
-<p align="center">
-  <img src="frontend/public/logo.png" alt="Scribr" width="120" />
-</p>
+# Scribr
 
-<p align="center">
-  A personal YouTube transcript manager. Subscribe to channels, extract transcripts, and organize them for AI tools like NotebookLM.
-</p>
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Node.js 18+](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org/)
 
-<p align="center">
-  <em>Note: This project was vibe coded with basic security checks only. Intended for local use. Use at your own risk.</em>
-</p>
+A self-hosted YouTube transcript manager. Subscribe to channels, extract transcripts, and organize them for AI tools like NotebookLM.
 
 ## Features
 
-- **Channel Management** - Add YouTube channels and fetch their video catalog
-- **YouTube Captions** - Extract transcripts from existing captions (free, instant)
-- **Local Whisper** - On-device transcription using MLX (Apple Silicon) or faster-whisper (Windows/Linux/Intel Mac)
-- **Batch Operations** - Extract multiple transcripts or download audio files in bulk
-- **Export** - Copy or download transcripts as text files
+- **Channel Subscriptions** — Add YouTube channels and automatically fetch their video catalog
+- **YouTube Captions** — Extract transcripts from existing captions (free, instant)
+- **Local Whisper** — On-device transcription using MLX (Apple Silicon) or faster-whisper (other platforms)
+- **Batch Operations** — Extract multiple transcripts or download audio files in bulk
+- **Export** — Copy or download transcripts as plain text
 
 ## Requirements
 
@@ -24,71 +20,70 @@
 - Node.js 18+
 - FFmpeg
 
-### Install (macOS)
-
+**macOS:**
 ```bash
 brew install python node ffmpeg
 ```
 
-### Install (Ubuntu/Debian)
-
+**Ubuntu/Debian:**
 ```bash
 sudo apt install python3.11 python3.11-venv nodejs npm ffmpeg
 ```
 
 ## Quick Start
 
-### 1. Clone and configure
-
 ```bash
-git clone https://github.com/user/scribr.git
+# Clone the repository
+git clone https://github.com/jackal-lch/scribr.git
 cd scribr
+
+# Configure
 cp backend/.env.example backend/.env
-```
+# Edit backend/.env and add your YOUTUBE_API_KEY
 
-Edit `backend/.env` and add your `YOUTUBE_API_KEY` (see [Getting API Keys](#getting-api-keys)).
-
-### 2. Run
-
-```bash
+# Run
 ./start.sh
 ```
 
-This script:
-- Checks for required dependencies
-- Creates Python virtual environment
-- Installs backend and frontend dependencies
-- Installs MLX Whisper on Apple Silicon
-- Starts both servers
+The startup script handles virtual environment setup, dependency installation, and launches both servers.
 
-### 3. Open
+Open [http://localhost:5173](http://localhost:5173) to get started.
 
-Visit [http://localhost:5173](http://localhost:5173)
-
-## Getting API Keys
+## Configuration
 
 ### YouTube Data API (Required)
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a project and enable "YouTube Data API v3"
-3. Create an API key under Credentials
-4. Add to `backend/.env` as `YOUTUBE_API_KEY`
+2. Create a project and enable **YouTube Data API v3**
+3. Create an API key under **Credentials**
+4. Add to `backend/.env`:
+   ```
+   YOUTUBE_API_KEY=your_api_key_here
+   ```
 
-## Transcription Methods
+### Environment Variables
 
-Scribr tries transcription in this order:
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `YOUTUBE_API_KEY` | Yes | YouTube Data API v3 key |
+| `PROXY_URL` | No | HTTP/SOCKS proxy for yt-dlp |
+| `DATABASE_URL` | No | Database URL (default: SQLite) |
 
-1. **YouTube Captions** - Extracts existing captions (free, instant)
-2. **Local Whisper** - Uses on-device model if installed
+## Transcription
 
-### Local Whisper Backends
+Scribr attempts transcription in order:
 
-| Platform | Backend | Models |
-|----------|---------|--------|
-| macOS (Apple Silicon) | MLX Whisper | turbo, large-v3-turbo, medium |
-| Windows/Linux/Intel Mac | faster-whisper | tiny, base, small, medium, large-v3 |
+1. **YouTube Captions** — Extracts existing captions when available
+2. **Local Whisper** — Falls back to on-device transcription
 
-Download models from the navbar dropdown. Models are cached in `~/.cache/huggingface/hub`.
+### Whisper Backends
+
+| Platform | Backend | Recommended Model |
+|----------|---------|-------------------|
+| macOS (Apple Silicon) | [MLX Whisper](https://github.com/ml-explore/mlx-examples/tree/main/whisper) | turbo |
+| Windows / Linux / Intel Mac | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) | small |
+
+Download models from the settings dropdown in the navigation bar. Models are cached in `~/.cache/huggingface/hub`.
 
 ## Usage
 
@@ -100,69 +95,60 @@ Paste any YouTube channel URL:
 
 ### Extracting Transcripts
 
-- **Single video**: Click "Extract" on any video
-- **Batch (captions only)**: Click "Extract All" - uses YouTube captions only
-- **Batch (with Whisper)**: Click "Transcribe All" - uses captions, then local Whisper
+| Action | Scope | Method |
+|--------|-------|--------|
+| **Extract** | Single video | YouTube captions → Whisper |
+| **Extract All** | All videos | YouTube captions only |
+| **Transcribe All** | All videos | YouTube captions → Whisper |
 
-### Navbar Settings
+### Browser Cookies
 
-- **Whisper Model**: Select and download local transcription models
-- **Browser Cookies**: Choose browser for YouTube authentication (needed for some videos)
+Some videos require YouTube authentication. Select your browser from the navbar to use its cookies for downloading.
 
-## Architecture
+## Project Structure
 
 ```
 scribr/
-├── backend/              # FastAPI + SQLite
+├── backend/                 # FastAPI + SQLite
 │   ├── app/
-│   │   ├── main.py
-│   │   ├── models/       # SQLAlchemy models
-│   │   ├── routers/      # API endpoints
-│   │   └── services/     # YouTube, Whisper, transcription
+│   │   ├── models/          # SQLAlchemy models
+│   │   ├── routers/         # API endpoints
+│   │   └── services/        # YouTube, Whisper, transcription
 │   └── requirements.txt
-├── frontend/             # React + TypeScript + Vite
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   └── api/
-│   └── package.json
-└── start.sh              # Startup script
+├── frontend/                # React + TypeScript + Vite
+│   └── src/
+│       ├── components/
+│       ├── pages/
+│       └── api/
+└── start.sh
 ```
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `YOUTUBE_API_KEY` | Yes | YouTube Data API v3 key |
-| `FRONTEND_URL` | No | Frontend URL (default: http://localhost:5173) |
-| `CORS_ORIGINS` | No | Allowed CORS origins (default: http://localhost:5173) |
-| `PROXY_URL` | No | HTTP/SOCKS proxy for yt-dlp |
-| `DATABASE_URL` | No | Database URL (default: SQLite) |
 
 ## Troubleshooting
 
-### "Failed to download audio"
+### Audio download fails
 
-1. Ensure FFmpeg is installed: `ffmpeg -version`
-2. Select your browser in navbar (must be logged into YouTube)
-3. Try a different browser
+1. Verify FFmpeg is installed: `ffmpeg -version`
+2. Select your browser in the navbar (must be logged into YouTube)
+3. Try a different browser or configure a proxy via `PROXY_URL`
 
-### "No transcript available"
+### No transcript available
 
-- Video has no YouTube captions
-- Download a Whisper model from the navbar dropdown
+The video has no YouTube captions. Download a Whisper model from the navbar settings to enable local transcription.
 
 ### Videos require sign-in
 
-Select your browser from the navbar. Scribr uses browser cookies to access YouTube.
-
-## License
-
-MIT License - see [LICENSE](LICENSE)
+Select your browser from the navbar. Scribr uses browser cookies to authenticate with YouTube.
 
 ## Contributing
 
+Contributions are welcome. Please open an issue to discuss proposed changes before submitting a pull request.
+
 1. Fork the repository
-2. Create a feature branch
-3. Make changes and test
-4. Submit a pull request
+2. Create a feature branch (`git checkout -b feature/description`)
+3. Commit your changes
+4. Push to the branch (`git push origin feature/description`)
+5. Open a pull request
+
+## License
+
+[MIT](LICENSE)
