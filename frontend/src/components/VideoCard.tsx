@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { extractTranscript, formatDuration, getYouTubeUrl, downloadAudio, triggerDownload, revokeDownloadUrl, AI_PROVIDERS } from '../api/videos';
-import type { Video, AiProvider } from '../api/videos';
+import { extractTranscript, formatDuration, getYouTubeUrl, downloadAudio, triggerDownload, revokeDownloadUrl } from '../api/videos';
+import type { Video } from '../api/videos';
 
 interface VideoCardProps {
   video: Video;
@@ -15,37 +15,88 @@ interface VideoCardProps {
 
 export default function VideoCard({ video, channelId, onViewTranscript, isSelected, onSelectChange, showCheckbox }: VideoCardProps) {
   const queryClient = useQueryClient();
-  const [extractingProvider, setExtractingProvider] = useState<AiProvider | null>(null);
 
   const extractFreeMutation = useMutation({
     mutationFn: () => extractTranscript(video.id, false),
+
+    onMutate: async () => {
+      // Cancel queries with partial key match
+      await queryClient.cancelQueries({ queryKey: ['channelVideos', channelId] });
+
+      // Snapshot all matching queries for rollback
+      const previousData = queryClient.getQueriesData<Video[]>({
+        queryKey: ['channelVideos', channelId]
+      });
+
+      // Update all matching queries optimistically
+      queryClient.setQueriesData<Video[]>(
+        { queryKey: ['channelVideos', channelId] },
+        (old) => old?.map((v) => v.id === video.id
+          ? { ...v, transcript_status: 'extracting' as const }
+          : v
+        )
+      );
+
+      return { previousData };
+    },
+
+    onError: (_err, _vars, context) => {
+      // Rollback all queries to previous state
+      context?.previousData?.forEach(([queryKey, data]) => {
+        queryClient.setQueryData(queryKey, data);
+      });
+      toast.error('No captions available - try Whisper');
+    },
+
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['channelVideos', channelId] });
       if (data.has_transcript) {
-        toast.success('Transcript extracted from subtitles');
+        toast.success('Transcript extracted from captions');
       } else {
-        toast.error('No subtitles available - try AI extraction');
+        toast.error('No captions available - try Whisper');
       }
-    },
-    onError: () => {
-      toast.error('No subtitles available - try AI extraction');
     },
   });
 
-  const extractAiMutation = useMutation({
-    mutationFn: (provider: AiProvider) => extractTranscript(video.id, true, provider),
+  const extractWhisperMutation = useMutation({
+    mutationFn: () => extractTranscript(video.id, true),
+
+    onMutate: async () => {
+      // Cancel queries with partial key match
+      await queryClient.cancelQueries({ queryKey: ['channelVideos', channelId] });
+
+      // Snapshot all matching queries for rollback
+      const previousData = queryClient.getQueriesData<Video[]>({
+        queryKey: ['channelVideos', channelId]
+      });
+
+      // Update all matching queries optimistically
+      queryClient.setQueriesData<Video[]>(
+        { queryKey: ['channelVideos', channelId] },
+        (old) => old?.map((v) => v.id === video.id
+          ? { ...v, transcript_status: 'extracting' as const }
+          : v
+        )
+      );
+
+      return { previousData };
+    },
+
+    onError: (_err, _vars, context) => {
+      // Rollback all queries to previous state
+      context?.previousData?.forEach(([queryKey, data]) => {
+        queryClient.setQueryData(queryKey, data);
+      });
+      toast.error('Failed to extract transcript');
+    },
+
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['channelVideos', channelId] });
-      setExtractingProvider(null);
       if (data.has_transcript) {
         toast.success('Transcript extracted');
       } else {
         toast.error('Failed to extract transcript');
       }
-    },
-    onError: () => {
-      setExtractingProvider(null);
-      toast.error('Failed to extract transcript');
     },
   });
 
@@ -55,13 +106,8 @@ export default function VideoCard({ video, channelId, onViewTranscript, isSelect
     percent: number;
   }>({ active: false, phase: 'preparing', percent: 0 });
 
-  const isExtracting = extractFreeMutation.isPending || extractAiMutation.isPending;
+  const isExtracting = extractFreeMutation.isPending || extractWhisperMutation.isPending;
   const isDownloading = downloadState.active;
-
-  const handleAiExtract = (provider: AiProvider) => {
-    setExtractingProvider(provider);
-    extractAiMutation.mutate(provider);
-  };
 
   const handleDownloadAudio = async () => {
     setDownloadState({ active: true, phase: 'preparing', percent: 0 });
@@ -132,7 +178,7 @@ export default function VideoCard({ video, channelId, onViewTranscript, isSelect
     switch (video.transcript_status) {
       case 'completed':
         // Show method badge for completed transcripts
-        const isAi = video.transcript_method === 'ai';
+        const isAi = video.transcript_method === 'ai' || video.transcript_method?.startsWith('whisper-');
         return (
           <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
             isAi ? 'bg-purple-100 text-purple-800' : 'bg-green-100 text-green-800'
@@ -192,21 +238,21 @@ export default function VideoCard({ video, channelId, onViewTranscript, isSelect
           </div>
         )}
         {/* Thumbnail */}
-        <div className="relative flex-shrink-0 w-48">
+        <div className="relative flex-shrink-0 w-40 flex items-center bg-black">
           <a
             href={getYouTubeUrl(video.youtube_video_id)}
             target="_blank"
             rel="noopener noreferrer"
-            className="block"
+            className="block w-full aspect-video"
           >
             {video.thumbnail_url ? (
               <img
                 src={video.thumbnail_url}
                 alt={video.title}
-                className="w-full h-28 object-cover"
+                className="w-full h-full object-cover"
               />
             ) : (
-              <div className="w-full h-28 bg-gray-200 flex items-center justify-center">
+              <div className="w-full h-full bg-gray-200 flex items-center justify-center">
                 <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -294,7 +340,7 @@ export default function VideoCard({ video, channelId, onViewTranscript, isSelect
             {video.transcript_status === 'completed' ? (
               <button
                 onClick={() => onViewTranscript(video.id)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors cursor-pointer"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -310,64 +356,80 @@ export default function VideoCard({ video, channelId, onViewTranscript, isSelect
                     {video.transcript_error}
                   </p>
                 )}
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs text-gray-500">Retry:</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-gray-500 mr-1">Retry:</span>
                   <button
                     onClick={() => extractFreeMutation.mutate()}
                     disabled={isExtracting || isDownloading}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 transition-colors disabled:opacity-50"
+                    className="inline-flex items-center gap-1 p-1 text-xs font-medium text-green-700 hover:bg-green-50 rounded transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                    title="Extract from captions"
                   >
-                    {extractFreeMutation.isPending ? 'Trying...' : 'Free'}
+                    <span className="w-6 h-6 flex items-center justify-center bg-green-100 text-green-700 text-[10px] font-bold rounded">CC</span>
+                    {extractFreeMutation.isPending && <span>...</span>}
                   </button>
-                  {AI_PROVIDERS.map((provider) => (
-                    <button
-                      key={provider.id}
-                      onClick={() => handleAiExtract(provider.id)}
-                      disabled={isExtracting || isDownloading}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-purple-700 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors disabled:opacity-50"
-                    >
-                      {extractingProvider === provider.id ? 'Transcribing...' : provider.name}
-                    </button>
-                  ))}
-                  <span className="text-gray-300">|</span>
+                  <button
+                    onClick={() => extractWhisperMutation.mutate()}
+                    disabled={isExtracting || isDownloading}
+                    className="inline-flex items-center gap-1 p-1 text-xs font-medium text-blue-700 hover:bg-blue-50 rounded transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                    title="Transcribe with Whisper"
+                  >
+                    <span className="w-6 h-6 flex items-center justify-center bg-blue-100 text-blue-700 text-[10px] font-bold rounded">AI</span>
+                    {extractWhisperMutation.isPending && <span>...</span>}
+                  </button>
                   <button
                     onClick={handleDownloadAudio}
                     disabled={isExtracting || isDownloading}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50 min-w-[120px] justify-center"
-                    title="Download audio for local transcription"
+                    className="inline-flex items-center gap-1 p-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                    title="Download audio"
                   >
-                    {renderDownloadButton()}
+                    {isDownloading ? (
+                      renderDownloadButton()
+                    ) : (
+                      <span className="w-6 h-6 flex items-center justify-center bg-gray-100 text-gray-600 rounded">
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        </svg>
+                      </span>
+                    )}
                   </button>
                 </div>
               </div>
             ) : (
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-gray-500">Extract:</span>
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-gray-500 mr-1">Extract:</span>
                 <button
                   onClick={() => extractFreeMutation.mutate()}
                   disabled={isExtracting || isDownloading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-green-700 bg-green-50 rounded-lg hover:bg-green-100 transition-colors disabled:opacity-50"
+                  className="inline-flex items-center gap-1 p-1 text-xs font-medium text-green-700 hover:bg-green-50 rounded transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                  title="Extract from captions"
                 >
-                  {extractFreeMutation.isPending ? 'Extracting...' : 'Free'}
+                  <span className="w-6 h-6 flex items-center justify-center bg-green-100 text-green-700 text-[10px] font-bold rounded">CC</span>
+                  {extractFreeMutation.isPending && <span>...</span>}
                 </button>
-                {AI_PROVIDERS.map((provider) => (
-                  <button
-                    key={provider.id}
-                    onClick={() => handleAiExtract(provider.id)}
-                    disabled={isExtracting || isDownloading}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-purple-700 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors disabled:opacity-50"
-                  >
-                    {extractingProvider === provider.id ? 'Transcribing...' : provider.name}
-                  </button>
-                ))}
-                <span className="text-gray-300">|</span>
+                <button
+                  onClick={() => extractWhisperMutation.mutate()}
+                  disabled={isExtracting || isDownloading}
+                  className="inline-flex items-center gap-1 p-1 text-xs font-medium text-blue-700 hover:bg-blue-50 rounded transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                  title="Transcribe with Whisper"
+                >
+                  <span className="w-6 h-6 flex items-center justify-center bg-blue-100 text-blue-700 text-[10px] font-bold rounded">AI</span>
+                  {extractWhisperMutation.isPending && <span>...</span>}
+                </button>
                 <button
                   onClick={handleDownloadAudio}
                   disabled={isExtracting || isDownloading}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50 min-w-[120px] justify-center"
-                  title="Download audio for local transcription"
+                  className="inline-flex items-center gap-1 p-1 text-xs font-medium text-gray-600 hover:bg-gray-100 rounded transition-colors disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                  title="Download audio"
                 >
-                  {renderDownloadButton()}
+                  {isDownloading ? (
+                    renderDownloadButton()
+                  ) : (
+                    <span className="w-6 h-6 flex items-center justify-center bg-gray-100 text-gray-600 rounded">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                    </span>
+                  )}
                 </button>
               </div>
             )}

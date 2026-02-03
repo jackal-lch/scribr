@@ -1,5 +1,4 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
-import client, { API_URL, getToken, removeToken } from '../api/client';
+import { createContext, useContext, type ReactNode } from 'react';
 
 interface User {
   id: string;
@@ -8,47 +7,22 @@ interface User {
 }
 
 interface AuthContextType {
-  user: User | null;
+  user: User;
   loading: boolean;
-  login: () => void;
-  logout: () => void;
 }
+
+// Default user for single-user mode
+const defaultUser: User = {
+  id: '00000000-0000-0000-0000-000000000001',
+  email: 'user@local',
+  name: 'Local User',
+};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Check if we have a token, then validate it
-    const token = getToken();
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-
-    client.get('/auth/me')
-      .then((res) => setUser(res.data))
-      .catch(() => {
-        removeToken(); // Token invalid, remove it
-        setUser(null);
-      })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const login = () => {
-    window.location.href = `${API_URL}/auth/google`;
-  };
-
-  const logout = () => {
-    removeToken();
-    setUser(null);
-    window.location.href = '/login';
-  };
-
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user: defaultUser, loading: false }}>
       {children}
     </AuthContext.Provider>
   );

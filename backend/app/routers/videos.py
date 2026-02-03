@@ -2,12 +2,12 @@
 Video and transcript management endpoints.
 Videos belong to channels, which belong to users.
 """
+import json
 import re
 import os
 import tempfile
 from datetime import datetime
 from typing import Annotated, Optional
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from fastapi.responses import PlainTextResponse, FileResponse, StreamingResponse
@@ -33,6 +33,7 @@ from app.schemas.video import (
 )
 from app.services.youtube_api import get_channel_videos
 from app.services.transcript import extract_transcript, extract_transcript_caption_only, TranscriptionError
+from app.services.user_settings import get_cookies_browser
 from app.config import get_settings
 
 router = APIRouter()
@@ -48,7 +49,7 @@ def strip_timestamps(content: str) -> str:
 
 
 async def verify_channel_ownership(
-    channel_id: UUID,
+    channel_id: str,
     current_user: CurrentUser,
     db: AsyncSession,
 ) -> Channel:
@@ -69,7 +70,7 @@ async def verify_channel_ownership(
 
 @router.get("/channels/{channel_id}/videos", response_model=list[VideoListResponse])
 async def list_channel_videos(
-    channel_id: UUID,
+    channel_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     limit: int = 500,
@@ -169,7 +170,7 @@ async def list_channel_videos(
 
 @router.get("/videos/{video_id}", response_model=VideoResponse)
 async def get_video(
-    video_id: UUID,
+    video_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -202,7 +203,7 @@ async def get_video(
         like_count=video.like_count,
         comment_count=video.comment_count,
         # Additional metadata
-        tags=video.tags or [],
+        tags=video.tags_list,
         category_id=video.category_id,
         definition=video.definition,
         caption=video.caption,
@@ -218,7 +219,7 @@ async def get_video(
 
 @router.get("/videos/{video_id}/transcript", response_model=TranscriptResponse)
 async def get_transcript(
-    video_id: UUID,
+    video_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -262,7 +263,7 @@ async def get_transcript(
 
 @router.get("/videos/{video_id}/transcript/download")
 async def download_transcript(
-    video_id: UUID,
+    video_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -324,7 +325,7 @@ Language: {transcript.language}
 @limiter.limit("10/minute")
 async def download_audio(
     request: Request,
-    video_id: UUID,
+    video_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     background_tasks: BackgroundTasks,
@@ -354,21 +355,28 @@ async def download_audio(
     output_template = os.path.join(temp_dir, f"{youtube_video_id}.%(ext)s")
 
     ydl_opts = {
-        'format': 'worstaudio[ext=m4a]/worstaudio/worst',
+        'format': 'bestaudio/best',  # Flexible: any audio stream, or best overall if no separate audio
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
-        'extract_audio': True,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '64',
         }],
+        # Required to solve YouTube's JS challenges
+        'extractor_args': {'youtube': {'player_client': ['web_creator']}},
+        # Use Node.js for JS challenges
+        'js_runtimes': {'node': {}},
     }
 
     # Add proxy if configured
     if settings.proxy_url:
         ydl_opts['proxy'] = settings.proxy_url
+
+    # Add cookies from browser (required for YouTube downloads due to bot detection)
+    browser = get_cookies_browser()
+    ydl_opts['cookiesfrombrowser'] = (browser,)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -426,7 +434,7 @@ async def download_audio(
 @limiter.limit("20/minute")
 async def extract_video_transcript(
     request: Request,
-    video_id: UUID,
+    video_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     use_ai: bool = True,  # If True, fall back to AI when no captions available
@@ -463,7 +471,7 @@ async def extract_video_transcript(
             view_count=video.view_count,
             like_count=video.like_count,
             comment_count=video.comment_count,
-            tags=video.tags or [],
+            tags=video.tags_list,
             category_id=video.category_id,
             definition=video.definition,
             caption=video.caption,
@@ -529,7 +537,7 @@ async def extract_video_transcript(
         view_count=video.view_count,
         like_count=video.like_count,
         comment_count=video.comment_count,
-        tags=video.tags or [],
+        tags=video.tags_list,
         category_id=video.category_id,
         definition=video.definition,
         caption=video.caption,
@@ -546,7 +554,7 @@ async def extract_video_transcript(
 
 @router.post("/channels/{channel_id}/fetch-videos", response_model=FetchVideosResponse)
 async def fetch_channel_videos(
-    channel_id: UUID,
+    channel_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     request: FetchVideosRequest = FetchVideosRequest(),
@@ -557,9 +565,11 @@ async def fetch_channel_videos(
     # Fetch videos from YouTube using channel ID
     video_infos = await get_channel_videos(channel.youtube_channel_id, limit=request.limit)
 
-    # Get existing video IDs
+    # Get existing video IDs (check globally since youtube_video_id has a unique constraint)
     existing_result = await db.execute(
-        select(Video.youtube_video_id).where(Video.channel_id == channel_id)
+        select(Video.youtube_video_id).where(
+            Video.youtube_video_id.in_([info.video_id for info in video_infos])
+        )
     )
     existing_ids = {row[0] for row in existing_result.all()}
 
@@ -580,7 +590,7 @@ async def fetch_channel_videos(
                 like_count=info.like_count,
                 comment_count=info.comment_count,
                 # Additional metadata
-                tags=info.tags,
+                tags=json.dumps(info.tags or []),
                 category_id=info.category_id,
                 definition=info.definition,
                 caption=info.caption,
@@ -615,7 +625,7 @@ DOWNLOAD_TOKEN_TTL = 600
 
 @router.get("/channels/{channel_id}/prepare-all-audio")
 async def prepare_all_audio(
-    channel_id: UUID,
+    channel_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
     video_ids: Optional[str] = None,  # Comma-separated video IDs
@@ -637,7 +647,7 @@ async def prepare_all_audio(
     if video_ids:
         # Parse comma-separated UUIDs
         try:
-            selected_ids = [UUID(vid.strip()) for vid in video_ids.split(',') if vid.strip()]
+            selected_ids = [vid.strip() for vid in video_ids.split(',') if vid.strip()]
         except ValueError:
             async def error_stream():
                 yield f"data: {json.dumps({'error': 'Invalid video IDs'})}\n\n"
@@ -681,16 +691,21 @@ async def prepare_all_audio(
                 output_template = os.path.join(temp_dir, f"{youtube_video_id}.%(ext)s")
 
                 ydl_opts = {
-                    'format': 'worstaudio[ext=m4a]/worstaudio/worst',
+                    'format': 'bestaudio/best',  # Flexible: any audio stream, or best overall if no separate audio
                     'outtmpl': output_template,
                     'quiet': True,
                     'no_warnings': True,
-                    'extract_audio': True,
                     'postprocessors': [{
                         'key': 'FFmpegExtractAudio',
                         'preferredcodec': 'mp3',
                         'preferredquality': '64',
                     }],
+                    # Required to solve YouTube's JS challenges
+                    'extractor_args': {'youtube': {'player_client': ['web_creator']}},
+                    # Use Node.js for JS challenges
+                    'js_runtimes': {'node': {}},
+                    # Add cookies from browser (required for YouTube downloads)
+                    'cookiesfrombrowser': (get_cookies_browser(),),
                 }
 
                 # Add proxy if configured
@@ -806,33 +821,139 @@ async def download_prepared_audio(token: str, current_user: CurrentUser, backgro
     )
 
 
-@router.post("/channels/{channel_id}/extract-all-transcripts")
-async def extract_all_channel_transcripts(
-    channel_id: UUID,
+@router.get("/channels/{channel_id}/extract-transcripts-stream")
+async def extract_transcripts_stream(
+    channel_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
-    use_ai: bool = False,  # If True, use AI for videos without captions
-    provider: Optional[str] = None,  # AI provider: "replicate" or "siliconflow"
+    use_ai: bool = False,
+    video_ids: Optional[str] = None,
 ):
     """
-    Extract transcripts for all videos without transcripts in a channel.
-
-    Args:
-        use_ai: If False (default), only extract from videos with captions (free).
-                If True, also use AI transcription for videos without captions.
-        provider: AI provider to use ("replicate" or "siliconflow")
+    Extract transcripts with streaming progress via SSE.
     """
-    await verify_channel_ownership(channel_id, current_user, db)
+    import json
 
-    # Get all videos without transcripts
+    channel = await verify_channel_ownership(channel_id, current_user, db)
+
+    # Get videos to process
     query = select(Video).where(
         Video.channel_id == channel_id,
         Video.has_transcript == False,
         Video.transcript_status != "extracting",
     )
 
-    # If not using AI, only get videos with captions
-    if not use_ai:
+    if video_ids:
+        try:
+            selected_ids = [vid.strip() for vid in video_ids.split(',') if vid.strip()]
+            query = query.where(Video.id.in_(selected_ids))
+        except ValueError:
+            pass
+
+    if not use_ai and not video_ids:
+        query = query.where(Video.caption == True)
+
+    query = query.order_by(Video.published_at.desc().nullslast())
+    result = await db.execute(query)
+    videos = list(result.scalars().all())
+    total = len(videos)
+
+    if total == 0:
+        async def empty_stream():
+            yield f"data: {json.dumps({'status': 'complete', 'extracted': 0, 'extracted_ai': 0, 'failed': 0, 'total': 0})}\n\n"
+        return StreamingResponse(empty_stream(), media_type="text/event-stream")
+
+    async def generate_progress():
+        extracted = 0
+        extracted_ai = 0
+        failed = 0
+
+        for i, video in enumerate(videos):
+            # Send progress update
+            yield f"data: {json.dumps({'status': 'extracting', 'current': i + 1, 'total': total, 'title': video.title[:50], 'extracted': extracted, 'extracted_ai': extracted_ai, 'failed': failed})}\n\n"
+
+            if video.has_transcript:
+                continue
+
+            video.transcript_status = "extracting"
+            await db.commit()
+
+            try:
+                if use_ai:
+                    transcript_result = await extract_transcript(video.youtube_video_id)
+                else:
+                    transcript_result = await extract_transcript_caption_only(video.youtube_video_id)
+
+                if transcript_result:
+                    transcript = Transcript(
+                        video_id=video.id,
+                        content=transcript_result.content,
+                        language=transcript_result.language,
+                        word_count=transcript_result.word_count,
+                        method=transcript_result.method,
+                    )
+                    db.add(transcript)
+                    video.has_transcript = True
+                    video.transcript_status = "completed"
+                    if transcript_result.method in ("ai", "whisper-mlx", "whisper-faster-whisper"):
+                        extracted_ai += 1
+                    else:
+                        extracted += 1
+                else:
+                    video.transcript_status = "failed"
+                    video.transcript_error = "No transcript available"
+                    failed += 1
+            except Exception as e:
+                video.transcript_status = "failed"
+                video.transcript_error = str(e)[:200]
+                failed += 1
+
+            await db.commit()
+
+        # Send completion
+        yield f"data: {json.dumps({'status': 'complete', 'extracted': extracted, 'extracted_ai': extracted_ai, 'failed': failed, 'total': total})}\n\n"
+
+    return StreamingResponse(
+        generate_progress(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+@router.post("/channels/{channel_id}/extract-all-transcripts")
+async def extract_all_channel_transcripts(
+    channel_id: str,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    use_ai: bool = False,  # If True, use AI for videos without captions
+    provider: Optional[str] = None,  # AI provider: "replicate" or "siliconflow"
+    video_ids: Optional[str] = None,  # Comma-separated video IDs to extract (if not provided, extracts all)
+):
+    """
+    Extract transcripts for videos in a channel (non-streaming version).
+    """
+    await verify_channel_ownership(channel_id, current_user, db)
+
+    # Get videos to process
+    query = select(Video).where(
+        Video.channel_id == channel_id,
+        Video.has_transcript == False,
+        Video.transcript_status != "extracting",
+    )
+
+    # If specific video IDs provided, filter to those
+    if video_ids:
+        try:
+            selected_ids = [vid.strip() for vid in video_ids.split(',') if vid.strip()]
+            query = query.where(Video.id.in_(selected_ids))
+        except ValueError:
+            pass  # Invalid UUIDs, just process all
+
+    # If not using AI, only get videos with captions (unless specific videos selected)
+    if not use_ai and not video_ids:
         query = query.where(Video.caption == True)
 
     query = query.order_by(Video.published_at.desc().nullslast())
@@ -871,7 +992,7 @@ async def extract_all_channel_transcripts(
                 db.add(transcript)
                 video.has_transcript = True
                 video.transcript_status = "completed"
-                if transcript_result.method == "ai":
+                if transcript_result.method in ("ai", "whisper-mlx", "whisper-faster-whisper"):
                     extracted_ai += 1
                 else:
                     extracted += 1

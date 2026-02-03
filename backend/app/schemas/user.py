@@ -1,6 +1,5 @@
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 
 from pydantic import BaseModel, EmailStr
 
@@ -21,7 +20,7 @@ class UserUpdate(BaseModel):
 
 
 class UserResponse(BaseModel):
-    id: UUID
+    id: str
     email: str
     name: Optional[str] = None
     telegram_bot_token: Optional[str] = None
@@ -39,8 +38,3 @@ class UserInDB(UserResponse):
 class TelegramConfig(BaseModel):
     bot_token: str
     chat_id: str
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"

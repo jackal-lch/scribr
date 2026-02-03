@@ -1,6 +1,5 @@
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -15,8 +14,8 @@ class ChannelUpdate(BaseModel):
 
 
 class ChannelResponse(BaseModel):
-    id: UUID
-    user_id: UUID
+    id: str
+    user_id: str
     youtube_channel_id: str
     youtube_channel_name: Optional[str] = None
     youtube_channel_url: Optional[str] = None

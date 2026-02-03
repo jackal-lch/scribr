@@ -1,13 +1,12 @@
 from datetime import datetime
 from typing import Optional
-from uuid import UUID
 
 from pydantic import BaseModel
 
 
 class VideoResponse(BaseModel):
-    id: UUID
-    channel_id: UUID
+    id: str
+    channel_id: str
     youtube_video_id: str
     title: str
     description: Optional[str] = None
@@ -31,7 +30,7 @@ class VideoResponse(BaseModel):
     # Transcript status
     has_transcript: bool = False
     transcript_status: str = "pending"  # pending, extracting, completed, failed
-    transcript_method: Optional[str] = None  # "caption" or "ai"
+    transcript_method: Optional[str] = None  # "caption", "ai", "whisper-mlx", or "whisper-faster-whisper"
     transcript_error: Optional[str] = None  # Error message if failed
     created_at: datetime
 
@@ -43,7 +42,7 @@ class VideoResponse(BaseModel):
 
 class VideoListResponse(BaseModel):
     """Lighter response for video lists."""
-    id: UUID
+    id: str
     youtube_video_id: str
     title: str
     published_at: Optional[datetime] = None
@@ -62,7 +61,7 @@ class VideoListResponse(BaseModel):
     # Transcript status
     has_transcript: bool = False
     transcript_status: str = "pending"
-    transcript_method: Optional[str] = None  # "caption" or "ai"
+    transcript_method: Optional[str] = None  # "caption", "ai", "whisper-mlx", or "whisper-faster-whisper"
     transcript_error: Optional[str] = None  # Error message if failed
     channel_name: Optional[str] = None
 
@@ -70,13 +69,13 @@ class VideoListResponse(BaseModel):
 
 
 class TranscriptResponse(BaseModel):
-    id: UUID
-    video_id: UUID
+    id: str
+    video_id: str
     content: str  # Timestamped version
     plain_content: str  # Plain version without timestamps
     language: str
     word_count: int
-    method: str = "caption"  # "caption" or "ai"
+    method: str = "caption"  # "caption", "ai", "whisper-mlx", or "whisper-faster-whisper"
     created_at: datetime
 
     model_config = {"from_attributes": True}

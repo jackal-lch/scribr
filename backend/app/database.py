@@ -4,7 +4,16 @@ from app.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(settings.database_url, echo=settings.environment == "development")
+# Add connect_args for SQLite (check_same_thread=False required for async)
+connect_args = {}
+if settings.database_url.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
+
+engine = create_async_engine(
+    settings.database_url,
+    echo=settings.environment == "development",
+    connect_args=connect_args
+)
 async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

@@ -7,11 +7,11 @@ import re
 import tempfile
 import zipfile
 from typing import Annotated, Optional
-from uuid import UUID
 
 import yt_dlp
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import FileResponse
+import json
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from slowapi import Limiter
@@ -48,7 +48,8 @@ async def list_channels(
     )
 
     if tag:
-        query = query.where(Channel.tags.contains([tag]))
+        # SQLite: tags stored as JSON string, use LIKE for filtering
+        query = query.where(Channel.tags.like(f'%"{tag}"%'))
 
     query = query.group_by(Channel.id).order_by(Channel.created_at.desc())
 
@@ -65,7 +66,7 @@ async def list_channels(
             youtube_channel_url=channel.youtube_channel_url,
             thumbnail_url=channel.thumbnail_url,
             total_videos=channel.total_videos,
-            tags=channel.tags or [],
+            tags=channel.tags_list,
             last_checked_at=channel.last_checked_at,
             created_at=channel.created_at,
             video_count=row[1],
@@ -112,7 +113,7 @@ async def add_channel(
         youtube_channel_url=channel_info.channel_url,
         thumbnail_url=channel_info.thumbnail_url,
         total_videos=channel_info.total_videos,
-        tags=channel_data.tags,
+        tags=json.dumps(channel_data.tags),
     )
     db.add(channel)
     await db.commit()
@@ -126,7 +127,7 @@ async def add_channel(
         youtube_channel_url=channel.youtube_channel_url,
         thumbnail_url=channel.thumbnail_url,
         total_videos=channel.total_videos,
-        tags=channel.tags or [],
+        tags=channel.tags_list,
         last_checked_at=channel.last_checked_at,
         created_at=channel.created_at,
         video_count=0,
@@ -161,7 +162,7 @@ async def preview_channel(
 @limiter.limit("60/minute")
 async def get_channel(
     request: Request,
-    channel_id: UUID,
+    channel_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -192,7 +193,7 @@ async def get_channel(
         youtube_channel_url=channel.youtube_channel_url,
         thumbnail_url=channel.thumbnail_url,
         total_videos=channel.total_videos,
-        tags=channel.tags or [],
+        tags=channel.tags_list,
         last_checked_at=channel.last_checked_at,
         created_at=channel.created_at,
         video_count=row[1],
@@ -203,7 +204,7 @@ async def get_channel(
 @limiter.limit("30/minute")
 async def update_channel(
     request: Request,
-    channel_id: UUID,
+    channel_id: str,
     channel_data: ChannelUpdate,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -220,7 +221,7 @@ async def update_channel(
             detail="Channel not found"
         )
 
-    channel.tags = channel_data.tags
+    channel.tags = json.dumps(channel_data.tags)
     await db.commit()
     await db.refresh(channel)
 
@@ -238,7 +239,7 @@ async def update_channel(
         youtube_channel_url=channel.youtube_channel_url,
         thumbnail_url=channel.thumbnail_url,
         total_videos=channel.total_videos,
-        tags=channel.tags or [],
+        tags=channel.tags_list,
         last_checked_at=channel.last_checked_at,
         created_at=channel.created_at,
         video_count=video_count,
@@ -249,7 +250,7 @@ async def update_channel(
 @limiter.limit("10/minute")
 async def remove_channel(
     request: Request,
-    channel_id: UUID,
+    channel_id: str,
     current_user: CurrentUser,
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
@@ -286,6 +287,8 @@ async def list_all_tags(
     all_tags = set()
     for row in result.all():
         if row[0]:
-            all_tags.update(row[0])
+            # Tags stored as JSON string
+            tags = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            all_tags.update(tags)
 
     return sorted(list(all_tags))

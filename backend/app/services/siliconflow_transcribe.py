@@ -13,6 +13,7 @@ import httpx
 import yt_dlp
 
 from app.config import get_settings
+from app.services.user_settings import get_cookies_browser
 
 logger = logging.getLogger(__name__)
 
@@ -48,21 +49,33 @@ class TranscriptionError(Exception):
 
 def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
     """Download audio from YouTube video using yt-dlp."""
+    from app.config import get_settings
+    settings = get_settings()
+
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
 
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'bestaudio/best',  # Flexible: any audio stream, or best overall if no separate audio
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
-        'extract_audio': True,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '128',
         }],
+        # Required to solve YouTube's JS challenges
+        'extractor_args': {'youtube': {'player_client': ['web_creator']}},
+        # Use Node.js for JS challenges
+        'js_runtimes': {'node': {}},
+        # Add cookies from browser (required for YouTube downloads due to bot detection)
+        'cookiesfrombrowser': (get_cookies_browser(),),
     }
+
+    # Add proxy if configured
+    if settings.proxy_url:
+        ydl_opts['proxy'] = settings.proxy_url
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

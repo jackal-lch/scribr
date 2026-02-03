@@ -17,7 +17,7 @@ export interface Video {
   // Transcript status
   has_transcript: boolean;
   transcript_status: 'pending' | 'extracting' | 'completed' | 'failed';
-  transcript_method: 'caption' | 'ai' | null;  // extraction method
+  transcript_method: 'caption' | 'ai' | 'whisper-mlx' | 'whisper-faster-whisper' | null;  // extraction method
   transcript_error: string | null;  // error message if failed
   channel_name: string | null;
 }
@@ -84,22 +84,13 @@ export async function getTranscript(videoId: string): Promise<Transcript> {
   return response.data;
 }
 
-export type AiProvider = 'replicate' | 'siliconflow';
-
-export const AI_PROVIDERS: { id: AiProvider; name: string }[] = [
-  { id: 'replicate', name: 'Replicate Whisper' },
-  { id: 'siliconflow', name: 'SiliconFlow' },
-];
-
 export async function extractTranscript(
   videoId: string,
-  useAi: boolean = true,
-  provider?: AiProvider
+  useLocalWhisper: boolean = false
 ): Promise<VideoDetail> {
-  const params: Record<string, unknown> = { use_ai: useAi };
-  if (provider) {
-    params.provider = provider;
-  }
+  // useLocalWhisper=true: Try CC first, then Local Whisper
+  // useLocalWhisper=false: Try CC only (free extraction)
+  const params: Record<string, unknown> = { use_ai: useLocalWhisper };
   const response = await apiClient.post<VideoDetail>(
     `/videos/${videoId}/extract-transcript`,
     null,
@@ -121,12 +112,14 @@ export async function fetchChannelVideos(
 
 export async function extractAllTranscripts(
   channelId: string,
-  useAi: boolean = false,
-  provider?: AiProvider
+  useLocalWhisper: boolean = false,
+  videoIds?: string[]
 ): Promise<BatchExtractResponse> {
-  const params: Record<string, unknown> = { use_ai: useAi };
-  if (provider) {
-    params.provider = provider;
+  // useLocalWhisper=true: Try CC first, then Local Whisper for remaining
+  // useLocalWhisper=false: Try CC only (free extraction)
+  const params: Record<string, unknown> = { use_ai: useLocalWhisper };
+  if (videoIds && videoIds.length > 0) {
+    params.video_ids = videoIds.join(',');
   }
   const response = await apiClient.post<BatchExtractResponse>(
     `/channels/${channelId}/extract-all-transcripts`,
@@ -134,6 +127,91 @@ export async function extractAllTranscripts(
     { params }
   );
   return response.data;
+}
+
+export interface ExtractionProgress {
+  status: 'extracting' | 'complete';
+  current?: number;
+  total?: number;
+  title?: string;
+  extracted: number;
+  extracted_ai: number;
+  failed: number;
+  error?: string;
+}
+
+export function extractTranscriptsStream(
+  channelId: string,
+  useLocalWhisper: boolean,
+  onProgress: (progress: ExtractionProgress) => void,
+  onComplete: (result: ExtractionProgress) => void,
+  onError: (error: string) => void,
+  videoIds?: string[]
+): () => void {
+  const baseUrl = apiClient.defaults.baseURL || '';
+  const controller = new AbortController();
+
+  // Build URL with query params
+  const params = new URLSearchParams();
+  params.set('use_ai', String(useLocalWhisper));
+  if (videoIds && videoIds.length > 0) {
+    params.set('video_ids', videoIds.join(','));
+  }
+
+  fetch(`${baseUrl}/channels/${channelId}/extract-transcripts-stream?${params}`, {
+    signal: controller.signal,
+  })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to start extraction');
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('No response body');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      const read = (): Promise<void> => {
+        return reader.read().then(({ done, value }) => {
+          if (done) return;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6)) as ExtractionProgress;
+                if (data.error) {
+                  onError(data.error);
+                  return;
+                }
+                if (data.status === 'complete') {
+                  onComplete(data);
+                } else {
+                  onProgress(data);
+                }
+              } catch {
+                // Ignore parse errors
+              }
+            }
+          }
+
+          return read();
+        });
+      };
+
+      return read();
+    })
+    .catch(err => {
+      if (err.name !== 'AbortError') {
+        onError(err.message || 'Failed to extract transcripts');
+      }
+    });
+
+  // Return cancel function
+  return () => controller.abort();
 }
 
 export function formatDuration(seconds: number | null): string {
@@ -209,7 +287,6 @@ export function prepareAllAudio(
   videoIds?: string[]  // Optional: specific video IDs to download
 ): () => void {
   const baseUrl = apiClient.defaults.baseURL || '';
-  const authToken = localStorage.getItem('token');
   const controller = new AbortController();
 
   // Build URL with optional video_ids query param
@@ -219,9 +296,6 @@ export function prepareAllAudio(
   }
 
   fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${authToken}`,
-    },
     signal: controller.signal,
   })
     .then(response => {

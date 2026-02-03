@@ -4,14 +4,7 @@ from functools import lru_cache
 
 class Settings(BaseSettings):
     # Database
-    database_url: str
-
-    # Auth
-    google_client_id: str
-    google_client_secret: str
-    jwt_secret: str
-    jwt_algorithm: str = "HS256"
-    jwt_expiration_hours: int = 168
+    database_url: str = "sqlite+aiosqlite:///./scribr.db"
 
     # External APIs
     anthropic_api_key: str = ""
@@ -40,6 +33,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"  # Ignore extra env vars not defined in Settings
 
 
 @lru_cache()

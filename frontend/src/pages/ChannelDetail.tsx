@@ -3,8 +3,8 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { getChannel, deleteChannel } from '../api/channels';
-import { getChannelVideos, fetchChannelVideos, extractAllTranscripts, prepareAllAudio, downloadPreparedAudio, AI_PROVIDERS } from '../api/videos';
-import type { VideoFilters, AiProvider, AudioPrepareProgress } from '../api/videos';
+import { getChannelVideos, fetchChannelVideos, extractTranscriptsStream, prepareAllAudio, downloadPreparedAudio } from '../api/videos';
+import type { VideoFilters, AudioPrepareProgress, ExtractionProgress } from '../api/videos';
 import VideoCard from '../components/VideoCard';
 import TranscriptModal from '../components/TranscriptModal';
 
@@ -75,9 +75,15 @@ export default function ChannelDetail() {
     return { pending, extracted };
   }, [allVideos]);
 
-  // Count pending videos
+  // Count pending videos by caption availability
   const pendingStats = useMemo(() => {
-    return { total: videosByTab.pending.length };
+    const withCC = videosByTab.pending.filter(v => v.caption === true).length;
+    const withoutCC = videosByTab.pending.filter(v => v.caption !== true).length;
+    return {
+      total: videosByTab.pending.length,
+      withCC,
+      withoutCC,
+    };
   }, [videosByTab.pending]);
 
   // Get videos for current tab
@@ -128,25 +134,80 @@ export default function ChannelDetail() {
     },
   });
 
-  const extractFreeMutation = useMutation({
-    mutationFn: () => extractAllTranscripts(id!, false),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['channelVideos', id] });
-      if (data.extracted > 0) {
-        toast.success(`Extracted ${data.extracted} transcripts from captions`);
-      } else {
-        toast.info('No new transcripts extracted');
-      }
-      if (data.failed > 0) {
-        toast.warning(`${data.failed} failed to extract`);
-      }
-    },
-    onError: () => {
-      toast.error('Failed to extract transcripts');
-    },
-  });
+  // Get selected video IDs for extraction (only pending ones)
+  const getSelectedPendingIds = useCallback(() => {
+    const pendingIds = new Set(videosByTab.pending.map(v => v.id));
+    return Array.from(selectedVideoIds).filter(id => pendingIds.has(id));
+  }, [selectedVideoIds, videosByTab.pending]);
 
-  const [extractingProvider, setExtractingProvider] = useState<AiProvider | null>(null);
+  // Extraction progress state
+  const [extractionProgress, setExtractionProgress] = useState<ExtractionProgress | null>(null);
+  const cancelExtractionRef = useRef<(() => void) | null>(null);
+
+  // Cleanup extraction on unmount
+  useEffect(() => {
+    return () => {
+      if (cancelExtractionRef.current) {
+        cancelExtractionRef.current();
+      }
+    };
+  }, []);
+
+  const handleExtract = useCallback((useWhisper: boolean) => {
+    if (!id) return;
+
+    const selectedIds = getSelectedPendingIds();
+    const videoIdsToExtract = selectedIds.length > 0 ? selectedIds : undefined;
+
+    // Start extraction with progress
+    const cancel = extractTranscriptsStream(
+      id,
+      useWhisper,
+      (progress) => {
+        setExtractionProgress(progress);
+      },
+      (result) => {
+        setExtractionProgress(null);
+        cancelExtractionRef.current = null;
+        queryClient.invalidateQueries({ queryKey: ['channelVideos', id] });
+        setSelectedVideoIds(new Set());
+
+        const total = result.extracted + result.extracted_ai;
+        if (total > 0) {
+          if (useWhisper) {
+            toast.success(`Extracted ${total} transcripts (${result.extracted} from captions, ${result.extracted_ai} from Whisper)`);
+          } else {
+            toast.success(`Extracted ${result.extracted} transcripts from captions`);
+          }
+        } else {
+          toast.info(useWhisper ? 'No new transcripts extracted' : 'No captions found - try Whisper for AI transcription');
+        }
+        if (result.failed > 0) {
+          toast.warning(`${result.failed} failed to extract`);
+        }
+      },
+      (error) => {
+        setExtractionProgress(null);
+        cancelExtractionRef.current = null;
+        toast.error(error);
+      },
+      videoIdsToExtract
+    );
+
+    cancelExtractionRef.current = cancel;
+  }, [id, getSelectedPendingIds, queryClient]);
+
+  const handleCancelExtraction = useCallback(() => {
+    if (cancelExtractionRef.current) {
+      cancelExtractionRef.current();
+      cancelExtractionRef.current = null;
+      setExtractionProgress(null);
+      toast.info('Extraction cancelled');
+      queryClient.invalidateQueries({ queryKey: ['channelVideos', id] });
+    }
+  }, [id, queryClient]);
+
+  const isExtracting = extractionProgress !== null;
 
   // ZIP download state with progress
   const [audioProgress, setAudioProgress] = useState<AudioPrepareProgress | null>(null);
@@ -226,35 +287,6 @@ export default function ChannelDetail() {
       toast.info('Download cancelled');
     }
   }, []);
-
-  const extractAiMutation = useMutation({
-    mutationFn: (provider: AiProvider) => extractAllTranscripts(id!, true, provider),
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['channelVideos', id] });
-      setExtractingProvider(null);
-      const total = data.extracted + data.extracted_ai;
-      if (total > 0) {
-        toast.success(`Extracted ${total} transcripts (${data.extracted} from captions, ${data.extracted_ai} from AI)`);
-      } else {
-        toast.info('No new transcripts extracted');
-      }
-      if (data.failed > 0) {
-        toast.warning(`${data.failed} failed to extract`);
-      }
-    },
-    onError: () => {
-      setExtractingProvider(null);
-      toast.error('Failed to extract transcripts');
-    },
-  });
-
-  const handleBulkAiExtract = (provider: AiProvider) => {
-    const providerName = AI_PROVIDERS.find(p => p.id === provider)?.name || provider;
-    if (confirm(`This will try free extraction first, then use ${providerName} for videos without subtitles. Continue?`)) {
-      setExtractingProvider(provider);
-      extractAiMutation.mutate(provider);
-    }
-  };
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteChannel(id!),
@@ -455,199 +487,210 @@ export default function ChannelDetail() {
 
       {/* Extract Actions (only show in Pending tab) */}
       {activeTab === 'pending' && videosByTab.pending.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm divide-y divide-gray-100 mb-6">
-          {/* Free CC extraction row */}
-          <div className="flex items-center justify-between p-4">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center justify-center w-8 h-8 bg-green-600 text-white text-xs font-bold rounded-lg">CC</span>
-              <div>
-                <div className="text-sm font-medium text-gray-900">{pendingStats.total} pending videos</div>
-                <div className="text-xs text-gray-500">Try free extraction from YouTube subtitles first</div>
-              </div>
-            </div>
-            <button
-              onClick={() => extractFreeMutation.mutate()}
-              disabled={extractFreeMutation.isPending || extractAiMutation.isPending}
-              className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium disabled:opacity-50 text-sm"
-            >
-              {extractFreeMutation.isPending ? (
-                <>
-                  <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Extracting...
-                </>
-              ) : (
-                'Extract Free'
-              )}
-            </button>
-          </div>
-
-          {/* AI extraction row */}
-          <div className="flex items-center justify-between p-4">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center justify-center w-8 h-8 bg-purple-600 text-white text-xs font-bold rounded-lg">AI</span>
-              <div>
-                <div className="text-sm font-medium text-gray-900">Use AI for remaining</div>
-                <div className="text-xs text-gray-500">Tries free first, then AI transcription for videos without subtitles</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {AI_PROVIDERS.map((provider) => (
-                <button
-                  key={provider.id}
-                  onClick={() => handleBulkAiExtract(provider.id)}
-                  disabled={extractFreeMutation.isPending || extractAiMutation.isPending}
-                  className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors font-medium disabled:opacity-50 text-sm"
-                >
-                  {extractingProvider === provider.id ? (
-                    <>
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      Transcribing...
-                    </>
-                  ) : (
-                    provider.name
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Download audio for local transcription */}
-          <div className="flex items-center justify-between p-4">
-            <div className="flex items-center gap-3">
-              <span className="inline-flex items-center justify-center w-8 h-8 bg-gray-600 text-white text-xs font-bold rounded-lg">
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                </svg>
-              </span>
-              <div className="flex-1">
-                <div className="text-sm font-medium text-gray-900">Download audio for local transcription</div>
-                <div className="text-xs text-gray-500">
-                  {audioProgress?.status === 'downloading' && audioProgress.current && audioProgress.total ? (
-                    <>Downloading {audioProgress.current}/{audioProgress.total}: {audioProgress.title}</>
-                  ) : audioProgress?.status === 'zipping' ? (
-                    <>Creating ZIP file...</>
-                  ) : audioProgress?.status === 'ready' ? (
-                    <>Starting download...</>
-                  ) : selectedPendingCount > 0 ? (
-                    <>{selectedPendingCount} video{selectedPendingCount > 1 ? 's' : ''} selected</>
-                  ) : (
-                    <>Select videos below or download all</>
-                  )}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm mb-4 overflow-hidden">
+          {/* Progress bar when extracting */}
+          {extractionProgress && (
+            <div className="px-4 py-3 bg-blue-50 border-b border-blue-100">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm text-blue-700">
+                  Extracting {extractionProgress.current}/{extractionProgress.total}: <span className="font-medium">{extractionProgress.title}</span>
                 </div>
-                {/* Progress bar */}
-                {audioProgress?.status === 'downloading' && audioProgress.current && audioProgress.total && (
-                  <div className="mt-2 w-full max-w-xs">
-                    <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gray-600 rounded-full transition-all duration-300"
-                        style={{ width: `${(audioProgress.current / audioProgress.total) * 100}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
+                <button
+                  onClick={handleCancelExtraction}
+                  className="text-sm text-blue-600 hover:text-blue-800 cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+              <div className="h-2 bg-blue-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-600 rounded-full transition-all duration-300"
+                  style={{ width: `${((extractionProgress.current || 0) / (extractionProgress.total || 1)) * 100}%` }}
+                />
+              </div>
+              <div className="flex gap-4 mt-2 text-xs text-blue-600">
+                <span>{extractionProgress.extracted} from captions</span>
+                <span>{extractionProgress.extracted_ai} from Whisper</span>
+                {extractionProgress.failed > 0 && <span className="text-red-600">{extractionProgress.failed} failed</span>}
               </div>
             </div>
-            <div className="flex items-center gap-2">
+          )}
+
+          {/* Row 1: Extract from YouTube captions */}
+          {!isExtracting && (
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <span className="w-8 h-8 flex items-center justify-center bg-green-100 text-green-700 text-xs font-bold rounded-lg flex-shrink-0">CC</span>
+                <div>
+                  <div className="text-sm text-gray-700">
+                    {selectedPendingCount > 0 ? (
+                      <>Try YouTube captions for <span className="font-semibold">{selectedPendingCount}</span> selected video{selectedPendingCount !== 1 ? 's' : ''}</>
+                    ) : (
+                      <>Try YouTube captions for all <span className="font-semibold">{pendingStats.total}</span> videos</>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-400">Free &amp; instant - works for videos with manual or auto-generated captions</div>
+                </div>
+              </div>
+              <button
+                onClick={() => handleExtract(false)}
+                disabled={isExtracting}
+                className="px-4 py-1.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 whitespace-nowrap cursor-pointer disabled:cursor-not-allowed"
+              >
+                {selectedPendingCount > 0 ? `Extract ${selectedPendingCount}` : 'Extract All'}
+              </button>
+            </div>
+          )}
+
+          {/* Row 2: Transcribe with local Whisper */}
+          {!isExtracting && (
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <span className="w-8 h-8 flex items-center justify-center bg-blue-100 text-blue-700 text-xs font-bold rounded-lg flex-shrink-0">AI</span>
+                <div>
+                  <div className="text-sm text-gray-700">
+                    {selectedPendingCount > 0 ? (
+                      <>Transcribe <span className="font-semibold">{selectedPendingCount}</span> selected video{selectedPendingCount !== 1 ? 's' : ''} with local Whisper</>
+                    ) : (
+                      <>Transcribe all <span className="font-semibold">{pendingStats.total}</span> videos with local Whisper</>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-400">Tries captions first, then uses Whisper AI for the rest</div>
+                </div>
+              </div>
+              <button
+                onClick={() => handleExtract(true)}
+                disabled={isExtracting}
+                className="px-4 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 whitespace-nowrap cursor-pointer disabled:cursor-not-allowed"
+              >
+                {selectedPendingCount > 0 ? `Transcribe ${selectedPendingCount}` : 'Transcribe All'}
+              </button>
+            </div>
+          )}
+
+          {/* Row 3: Download audio option */}
+          {!isExtracting && (
+            <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50">
+              <span className="text-sm text-gray-500">
+                {audioProgress?.status === 'downloading' && audioProgress.current && audioProgress.total
+                  ? `Downloading ${audioProgress.current}/${audioProgress.total}...`
+                  : audioProgress?.status === 'zipping'
+                  ? 'Creating ZIP...'
+                  : 'Or download audio for external tools'}
+              </span>
               {audioProgress ? (
                 <button
                   onClick={handleCancelDownload}
-                  className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium text-sm"
+                  className="px-3 py-1 text-sm text-gray-600 hover:text-gray-800 cursor-pointer"
                 >
                   Cancel
                 </button>
               ) : (
-                <>
-                  {/* Select All / Deselect All */}
-                  {selectedPendingCount === 0 ? (
-                    <button
-                      onClick={handleSelectAll}
-                      className="px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors text-sm"
-                    >
-                      Select All
-                    </button>
-                  ) : (
-                    <button
-                      onClick={handleDeselectAll}
-                      className="px-3 py-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors text-sm"
-                    >
-                      Deselect
-                    </button>
-                  )}
-                  {/* Download button */}
-                  <button
-                    onClick={() => handleDownloadZip(selectedPendingCount > 0)}
-                    disabled={extractFreeMutation.isPending || extractAiMutation.isPending}
-                    className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium disabled:opacity-50 text-sm"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
-                    {selectedPendingCount > 0
-                      ? `Download Selected (${selectedPendingCount})`
-                      : 'Download All (ZIP)'
-                    }
-                  </button>
-                </>
+                <button
+                  onClick={() => handleDownloadZip(selectedPendingCount > 0)}
+                  disabled={isExtracting}
+                  className="flex items-center gap-1.5 px-3 py-1 text-sm text-gray-600 hover:text-gray-800 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                  </svg>
+                  {selectedPendingCount > 0 ? `Download ${selectedPendingCount} selected` : 'Download all'}
+                </button>
               )}
             </div>
-          </div>
+          )}
+
+          {/* Progress bar for download */}
+          {audioProgress?.status === 'downloading' && audioProgress.current && audioProgress.total && (
+            <div className="px-4 pb-3 bg-gray-50">
+              <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                  style={{ width: `${(audioProgress.current / audioProgress.total) * 100}%` }}
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* Sorting, Filter and Search Toolbar */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
-        <div className="flex flex-wrap items-center gap-4">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-3 mb-4">
+        <div className="flex items-center gap-3">
+          {/* Select All checkbox (only in Pending tab) */}
+          {activeTab === 'pending' && videos.length > 0 && (
+            <>
+              <label className="flex items-center gap-2 cursor-pointer px-2 py-1 hover:bg-gray-50 rounded-lg" title="Select all">
+                <input
+                  type="checkbox"
+                  checked={selectedPendingCount === videosByTab.pending.length && videosByTab.pending.length > 0}
+                  ref={(el) => {
+                    if (el) {
+                      el.indeterminate = selectedPendingCount > 0 && selectedPendingCount < videosByTab.pending.length;
+                    }
+                  }}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      handleSelectAll();
+                    } else {
+                      handleDeselectAll();
+                    }
+                  }}
+                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                />
+                {selectedPendingCount > 0 && (
+                  <span className="text-sm text-blue-600 whitespace-nowrap">
+                    {selectedPendingCount}
+                  </span>
+                )}
+              </label>
+              <div className="w-px h-5 bg-gray-200"></div>
+            </>
+          )}
+
           {/* Search */}
-          <div className="flex-1 min-w-[200px]">
+          <div className="flex-1 min-w-[150px]">
             <div className="relative">
               <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
               <input
                 type="text"
-                placeholder="Search videos..."
+                placeholder="Search..."
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none"
+                className="w-full pl-9 pr-3 py-1.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
               />
             </div>
           </div>
 
           {/* Filters */}
-          <div className="flex items-center gap-2">
-            <select
-              value={filterDefinition}
-              onChange={(e) => setFilterDefinition(e.target.value as 'all' | 'hd' | 'sd')}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
-            >
-              <option value="all">All Quality</option>
-              <option value="hd">HD Only</option>
-              <option value="sd">SD Only</option>
-            </select>
-            <select
-              value={filterCaption}
-              onChange={(e) => setFilterCaption(e.target.value as 'all' | 'cc' | 'no-cc')}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
-            >
-              <option value="all">All Captions</option>
-              <option value="cc">Has CC</option>
-              <option value="no-cc">No CC</option>
-            </select>
-          </div>
+          <select
+            value={filterDefinition}
+            onChange={(e) => setFilterDefinition(e.target.value as 'all' | 'hd' | 'sd')}
+            className="px-2 py-1.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm bg-white"
+          >
+            <option value="all">Quality</option>
+            <option value="hd">HD</option>
+            <option value="sd">SD</option>
+          </select>
 
-          {/* Sort By */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-500">Sort:</span>
+          <select
+            value={filterCaption}
+            onChange={(e) => setFilterCaption(e.target.value as 'all' | 'cc' | 'no-cc')}
+            className="px-2 py-1.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm bg-white"
+          >
+            <option value="all">Captions</option>
+            <option value="cc">Has CC</option>
+            <option value="no-cc">No CC</option>
+          </select>
+
+          {/* Sort */}
+          <div className="flex items-center">
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortBy)}
-              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm"
+              className="px-2 py-1.5 border border-gray-300 rounded-l-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-sm bg-white border-r-0"
             >
               <option value="published_at">Date</option>
               <option value="view_count">Views</option>
@@ -657,16 +700,16 @@ export default function ChannelDetail() {
             </select>
             <button
               onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-              className="p-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+              className="p-1.5 border border-gray-300 rounded-r-lg hover:bg-gray-50 transition-colors bg-white"
               title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
             >
               {sortOrder === 'asc' ? (
                 <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
                 </svg>
               ) : (
                 <svg className="w-4 h-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4h13M3 8h9m-9 4h9m5-4v12m0 0l-4-4m4 4l4-4" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                 </svg>
               )}
             </button>

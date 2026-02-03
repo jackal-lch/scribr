@@ -13,6 +13,7 @@ import replicate
 import yt_dlp
 
 from app.config import get_settings
+from app.services.user_settings import get_cookies_browser
 
 logger = logging.getLogger(__name__)
 
@@ -55,17 +56,22 @@ def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
     output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
 
     ydl_opts = {
-        # Use lowest quality audio to save bandwidth - speech doesn't need high quality
-        'format': 'worstaudio[ext=m4a]/worstaudio/worst',
+        # Use bestaudio with fallback to best (for videos without separate audio streams)
+        'format': 'bestaudio/best',
         'outtmpl': output_template,
         'quiet': True,
         'no_warnings': True,
-        'extract_audio': True,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
             'preferredquality': '64',  # Low quality is fine for speech
         }],
+        # Required to solve YouTube's JS challenges
+        'extractor_args': {'youtube': {'player_client': ['web_creator']}},
+        # Use Node.js for JS challenges
+        'js_runtimes': {'node': {}},
+        # Add cookies from browser (required for YouTube downloads due to bot detection)
+        'cookiesfrombrowser': (get_cookies_browser(),),
     }
 
     # Add proxy if configured

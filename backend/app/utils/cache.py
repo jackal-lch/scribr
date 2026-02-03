@@ -1,6 +1,6 @@
 """
 Redis-backed cache with in-memory fallback.
-Used for OAuth states, download tokens, and other temporary data.
+Used for download tokens and other temporary data.
 """
 import json
 import logging
@@ -65,7 +65,7 @@ class Cache:
         Initialize cache with optional key prefix.
 
         Args:
-            prefix: Prefix for all keys (e.g., "oauth_state:", "download_token:")
+            prefix: Prefix for all keys (e.g., "download_token:")
         """
         self.prefix = prefix
 
@@ -171,5 +171,4 @@ class Cache:
 
 
 # Pre-configured cache instances
-oauth_state_cache = Cache(prefix="oauth_state:")
 download_token_cache = Cache(prefix="download_token:")

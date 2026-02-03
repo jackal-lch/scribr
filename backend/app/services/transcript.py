@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import yt_dlp
 
 from app.config import get_settings
+from app.services.user_settings import get_cookies_browser
 
 logger = logging.getLogger(__name__)
 
@@ -20,20 +21,53 @@ class TranscriptionError(Exception):
     pass
 
 
+async def _get_local_whisper_transcription(video_id: str) -> 'AudioTranscriptResult':
+    """
+    Try local Whisper transcription if a model is installed.
+    Returns None if no model installed, raises TranscriptionError on actual failure.
+    """
+    from app.services.whisper_local import (
+        transcribe_audio as whisper_transcribe,
+        has_any_model_installed,
+        TranscriptionError as WhisperError,
+    )
+
+    if not has_any_model_installed():
+        logger.info("No local Whisper model installed, skipping")
+        return None
+
+    try:
+        logger.info(f"Trying local Whisper transcription for {video_id}")
+        return await whisper_transcribe(video_id)
+    except WhisperError as e:
+        # Log but don't raise - let cloud APIs handle it
+        logger.warning(f"Local Whisper failed: {e}")
+        return None
+
+
 async def _get_ai_transcription(video_id: str, provider: str = None) -> 'AudioTranscriptResult':
     """
-    Get AI transcription using the specified or configured provider.
-    Supports: siliconflow, replicate
+    Get AI transcription using local Whisper first, then cloud providers.
+
+    Priority:
+    1. Local Whisper (if model installed)
+    2. Cloud APIs (Replicate/SiliconFlow)
 
     Raises TranscriptionError on failure.
     """
+    # Try local Whisper first
+    local_result = await _get_local_whisper_transcription(video_id)
+    if local_result:
+        return local_result
+
+    # Fall back to cloud APIs
     settings = get_settings()
     if not provider:
         provider = settings.transcription_provider.lower()
     else:
         provider = provider.lower()
 
-    logger.info(f"Using AI transcription provider: {provider}")
+    logger.info(f"Using cloud transcription provider: {provider}")
 
     if provider == "replicate":
         from app.services.replicate_transcribe import transcribe_audio, TranscriptionError as ReplicateError
@@ -48,6 +82,13 @@ async def _get_ai_transcription(video_id: str, provider: str = None) -> 'AudioTr
         except SiliconFlowError as e:
             raise TranscriptionError(str(e))
     else:
+        # No cloud provider configured and no local model
+        from app.services.whisper_local import has_any_model_installed
+        if not has_any_model_installed():
+            raise TranscriptionError(
+                "No transcription method available. Download a Whisper model in settings, "
+                "or configure a cloud API (Replicate/SiliconFlow)."
+            )
         raise TranscriptionError(f"Unknown transcription provider: {provider}")
 
 
@@ -96,8 +137,14 @@ def _extract_caption_sync(video_id: str) -> Optional[TranscriptResult]:
         'writesubtitles': True,
         'writeautomaticsub': True,
         # Support multiple languages
-        'subtitleslangs': ['en', 'en-US', 'en-GB', 'zh', 'zh-Hans', 'zh-Hant', 'zh-TW', 'zh-HK', 'ja', 'ko'],
+        'subtitleslangs': ['all'],  # Fetch all available languages, filter in code
         'subtitlesformat': 'json3',
+        # Required to solve YouTube's JS challenges
+        'extractor_args': {'youtube': {'player_client': ['web_creator']}},
+        # Use Node.js for JS challenges
+        'js_runtimes': {'node': {}},
+        # Add cookies from browser (required for YouTube access due to bot detection)
+        'cookiesfrombrowser': (get_cookies_browser(),),
     }
 
     # Add proxy if configured
@@ -115,9 +162,14 @@ def _extract_caption_sync(video_id: str) -> Optional[TranscriptResult]:
             subtitles = info.get('subtitles', {})
             automatic_captions = info.get('automatic_captions', {})
 
+            # Debug: log available languages
+            logger.info(f"Available manual subtitles: {list(subtitles.keys())}")
+            logger.info(f"Available automatic captions: {list(automatic_captions.keys())}")
+
             # Priority order for languages
             lang_priority = [
                 'en', 'en-US', 'en-GB',
+                'it', 'it-IT',
                 'zh', 'zh-Hans', 'zh-Hant', 'zh-TW', 'zh-HK',
                 'ja', 'ko'
             ]
