@@ -20,13 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 def _ensure_js_runtime_in_path():
-    """Ensure a JavaScript runtime is in PATH for yt-dlp's n-challenge solver."""
+    """Ensure Node.js is in PATH for yt-dlp's n-challenge solver."""
     node_paths = [
         Path.home() / ".local" / "share" / "mise" / "installs" / "node",
         Path.home() / ".nvm" / "versions" / "node",
         Path("/opt/homebrew/opt/node/bin"),
         Path("/usr/local/opt/node/bin"),
-        Path.home() / ".deno" / "bin",
     ]
 
     current_path = os.environ.get("PATH", "")
