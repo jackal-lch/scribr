@@ -6,6 +6,7 @@ import asyncio
 import tempfile
 import os
 import logging
+from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,6 +17,34 @@ from app.config import get_settings
 from app.services.user_settings import get_cookies_browser
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_js_runtime_in_path():
+    """Ensure a JavaScript runtime is in PATH for yt-dlp's n-challenge solver."""
+    node_paths = [
+        Path.home() / ".local" / "share" / "mise" / "installs" / "node",
+        Path.home() / ".nvm" / "versions" / "node",
+        Path("/opt/homebrew/opt/node/bin"),
+        Path("/usr/local/opt/node/bin"),
+        Path.home() / ".deno" / "bin",
+    ]
+
+    current_path = os.environ.get("PATH", "")
+
+    for base_path in node_paths:
+        if base_path.exists():
+            if "mise" in str(base_path) or "nvm" in str(base_path):
+                versions = sorted(base_path.iterdir(), reverse=True)
+                for version_dir in versions:
+                    bin_path = version_dir / "bin"
+                    if bin_path.exists() and (bin_path / "node").exists():
+                        if str(bin_path) not in current_path:
+                            os.environ["PATH"] = f"{bin_path}:{current_path}"
+                        return
+            else:
+                if str(base_path) not in current_path:
+                    os.environ["PATH"] = f"{base_path}:{current_path}"
+                return
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
@@ -49,6 +78,7 @@ class TranscriptionError(Exception):
 
 def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
     """Download audio from YouTube video using yt-dlp."""
+    _ensure_js_runtime_in_path()
     from app.config import get_settings
     settings = get_settings()
 
@@ -66,12 +96,8 @@ def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
             'preferredcodec': 'mp3',
             'preferredquality': '64',  # Low quality is fine for speech
         }],
-        # Required to solve YouTube's JS challenges
-        'extractor_args': {'youtube': {'player_client': ['web_creator']}},
-        # Use Node.js for JS challenges
-        'js_runtimes': {'node': {}},
-        # Add cookies from browser (required for YouTube downloads due to bot detection)
         'cookiesfrombrowser': (get_cookies_browser(),),
+        'js_runtimes': {'node': {}},  # Enable Node.js for YouTube n-challenge
     }
 
     # Add proxy if configured

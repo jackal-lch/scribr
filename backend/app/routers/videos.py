@@ -2,11 +2,13 @@
 Video and transcript management endpoints.
 Videos belong to channels, which belong to users.
 """
+import asyncio
 import json
 import re
 import os
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
@@ -38,6 +40,34 @@ from app.config import get_settings
 
 router = APIRouter()
 settings = get_settings()
+
+
+def _ensure_js_runtime_in_path():
+    """Ensure a JavaScript runtime is in PATH for yt-dlp's n-challenge solver."""
+    node_paths = [
+        Path.home() / ".local" / "share" / "mise" / "installs" / "node",
+        Path.home() / ".nvm" / "versions" / "node",
+        Path("/opt/homebrew/opt/node/bin"),
+        Path("/usr/local/opt/node/bin"),
+        Path.home() / ".deno" / "bin",
+    ]
+
+    current_path = os.environ.get("PATH", "")
+
+    for base_path in node_paths:
+        if base_path.exists():
+            if "mise" in str(base_path) or "nvm" in str(base_path):
+                versions = sorted(base_path.iterdir(), reverse=True)
+                for version_dir in versions:
+                    bin_path = version_dir / "bin"
+                    if bin_path.exists() and (bin_path / "node").exists():
+                        if str(bin_path) not in current_path:
+                            os.environ["PATH"] = f"{bin_path}:{current_path}"
+                        return
+            else:
+                if str(base_path) not in current_path:
+                    os.environ["PATH"] = f"{base_path}:{current_path}"
+                return
 
 
 def strip_timestamps(content: str) -> str:
@@ -332,6 +362,7 @@ async def download_audio(
 ):
     """Download audio from a YouTube video for local transcription."""
     import shutil
+    _ensure_js_runtime_in_path()
 
     # Verify ownership and get video info
     result = await db.execute(
@@ -364,19 +395,13 @@ async def download_audio(
             'preferredcodec': 'mp3',
             'preferredquality': '64',
         }],
-        # Required to solve YouTube's JS challenges
-        'extractor_args': {'youtube': {'player_client': ['web_creator']}},
-        # Use Node.js for JS challenges
-        'js_runtimes': {'node': {}},
+        'cookiesfrombrowser': (get_cookies_browser(),),
+        'js_runtimes': {'node': {}},  # Enable Node.js for YouTube n-challenge
     }
 
     # Add proxy if configured
     if settings.proxy_url:
         ydl_opts['proxy'] = settings.proxy_url
-
-    # Add cookies from browser (required for YouTube downloads due to bot detection)
-    browser = get_cookies_browser()
-    ydl_opts['cookiesfrombrowser'] = (browser,)
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -677,6 +702,7 @@ async def prepare_all_audio(
         return StreamingResponse(empty_stream(), media_type="text/event-stream")
 
     async def generate_progress():
+        _ensure_js_runtime_in_path()
         temp_dir = tempfile.mkdtemp()
         audio_files = []
         completed = 0
@@ -700,12 +726,8 @@ async def prepare_all_audio(
                         'preferredcodec': 'mp3',
                         'preferredquality': '64',
                     }],
-                    # Required to solve YouTube's JS challenges
-                    'extractor_args': {'youtube': {'player_client': ['web_creator']}},
-                    # Use Node.js for JS challenges
-                    'js_runtimes': {'node': {}},
-                    # Add cookies from browser (required for YouTube downloads)
                     'cookiesfrombrowser': (get_cookies_browser(),),
+                    'js_runtimes': {'node': {}},  # Enable Node.js for YouTube n-challenge
                 }
 
                 # Add proxy if configured

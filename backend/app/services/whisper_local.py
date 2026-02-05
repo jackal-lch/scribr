@@ -213,8 +213,40 @@ def _download_faster_whisper_model(model_name: str):
     del model
 
 
+def _ensure_js_runtime_in_path():
+    """Ensure a JavaScript runtime is in PATH for yt-dlp's n-challenge solver."""
+    # Check common Node.js locations (mise, nvm, homebrew, system)
+    node_paths = [
+        Path.home() / ".local" / "share" / "mise" / "installs" / "node",  # mise
+        Path.home() / ".nvm" / "versions" / "node",  # nvm
+        Path("/opt/homebrew/opt/node/bin"),  # Homebrew Apple Silicon
+        Path("/usr/local/opt/node/bin"),  # Homebrew Intel
+        Path.home() / ".deno" / "bin",  # deno fallback
+    ]
+
+    current_path = os.environ.get("PATH", "")
+
+    for base_path in node_paths:
+        if base_path.exists():
+            # For mise/nvm, find the actual version directory
+            if "mise" in str(base_path) or "nvm" in str(base_path):
+                versions = sorted(base_path.iterdir(), reverse=True)
+                for version_dir in versions:
+                    bin_path = version_dir / "bin"
+                    if bin_path.exists() and (bin_path / "node").exists():
+                        if str(bin_path) not in current_path:
+                            os.environ["PATH"] = f"{bin_path}:{current_path}"
+                        return
+            else:
+                # Direct bin directory
+                if str(base_path) not in current_path:
+                    os.environ["PATH"] = f"{base_path}:{current_path}"
+                return
+
+
 def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
     """Download audio from YouTube video using yt-dlp."""
+    _ensure_js_runtime_in_path()
     settings = get_settings()
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -230,9 +262,8 @@ def _download_audio_sync(video_id: str, output_dir: str) -> Optional[str]:
             'preferredcodec': 'mp3',
             'preferredquality': '64',
         }],
-        'extractor_args': {'youtube': {'player_client': ['web_creator']}},
-        'js_runtimes': {'node': {}},
         'cookiesfrombrowser': (get_cookies_browser(),),
+        'js_runtimes': {'node': {}},  # Enable Node.js for YouTube n-challenge
     }
 
     if settings.proxy_url:
