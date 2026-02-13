@@ -351,6 +351,40 @@ export function prepareAllAudio(
   return () => controller.abort();
 }
 
+export async function exportMarkdown(
+  channelId: string,
+  videoIds?: string[]
+): Promise<void> {
+  const params: Record<string, string> = {};
+  if (videoIds && videoIds.length > 0) {
+    params.video_ids = videoIds.join(',');
+  }
+
+  const response = await apiClient.get(`/channels/${channelId}/export-markdown`, {
+    params,
+    responseType: 'blob',
+  });
+
+  // Get filename from Content-Disposition header
+  const contentDisposition = response.headers['content-disposition'];
+  let filename = 'transcripts.md';
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename="?([^";\n]+)"?/);
+    if (match) {
+      filename = match[1];
+    }
+  }
+
+  const url = window.URL.createObjectURL(new Blob([response.data]));
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 export async function downloadPreparedAudio(token: string): Promise<void> {
   const response = await apiClient.get(`/download-prepared-audio/${token}`, {
     responseType: 'blob',

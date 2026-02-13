@@ -5,8 +5,10 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from app.config import get_settings
-from app.database import engine, Base
+from sqlalchemy import update
+from app.database import engine, async_session_maker, Base
 from app.routers import channels, videos, users, settings as settings_router, whisper
+from app.models.video import Video
 # Import models to register them with Base
 from app.models import user, channel, video, transcript  # noqa: F401
 
@@ -21,6 +23,16 @@ async def lifespan(app: FastAPI):
     # Startup: create database tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Reset any videos stuck in "extracting" from a previous interrupted run
+    async with async_session_maker() as session:
+        result = await session.execute(
+            update(Video)
+            .where(Video.transcript_status == "extracting")
+            .values(transcript_status="pending")
+        )
+        if result.rowcount:
+            await session.commit()
+            print(f"Reset {result.rowcount} stuck video(s) from 'extracting' to 'pending'")
     # start_scheduler()  # Will be enabled in Phase 6
     yield
     # Shutdown

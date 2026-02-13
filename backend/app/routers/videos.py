@@ -944,6 +944,86 @@ async def extract_transcripts_stream(
     )
 
 
+@router.get("/channels/{channel_id}/export-markdown")
+async def export_markdown(
+    channel_id: str,
+    current_user: CurrentUser,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    video_ids: Optional[str] = None,  # Comma-separated video IDs; if omitted, exports all extracted
+):
+    """Export video details and transcripts as a single Markdown file."""
+    channel = await verify_channel_ownership(channel_id, current_user, db)
+
+    # Build query for videos with transcripts
+    query = (
+        select(Video, Transcript)
+        .join(Transcript, Transcript.video_id == Video.id)
+        .where(Video.channel_id == channel_id, Video.has_transcript == True)
+    )
+
+    if video_ids:
+        selected_ids = [vid.strip() for vid in video_ids.split(",") if vid.strip()]
+        if selected_ids:
+            query = query.where(Video.id.in_(selected_ids))
+
+    query = query.order_by(Video.published_at.asc().nullslast())
+    result = await db.execute(query)
+    rows = result.all()
+
+    if not rows:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No transcripts found to export",
+        )
+
+    # Build markdown
+    parts: list[str] = []
+    parts.append(f"# {channel.youtube_channel_name}\n")
+    parts.append(f"Exported {len(rows)} video{'s' if len(rows) != 1 else ''} with transcripts.\n")
+    parts.append("---\n")
+
+    for video, transcript in rows:
+        parts.append(f"## {video.title}\n")
+
+        # Metadata table
+        meta_lines = []
+        if video.published_at:
+            meta_lines.append(f"- **Published**: {video.published_at.strftime('%Y-%m-%d')}")
+        meta_lines.append(f"- **URL**: https://www.youtube.com/watch?v={video.youtube_video_id}")
+        if video.duration_seconds:
+            h, rem = divmod(video.duration_seconds, 3600)
+            m, s = divmod(rem, 60)
+            dur = f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+            meta_lines.append(f"- **Duration**: {dur}")
+        if video.view_count is not None:
+            meta_lines.append(f"- **Views**: {video.view_count:,}")
+        if video.like_count is not None:
+            meta_lines.append(f"- **Likes**: {video.like_count:,}")
+        meta_lines.append(f"- **Words**: {transcript.word_count:,}")
+        meta_lines.append(f"- **Language**: {transcript.language}")
+        meta_lines.append(f"- **Method**: {transcript.method or 'caption'}")
+        parts.append("\n".join(meta_lines))
+        parts.append("")
+
+        # Transcript content
+        plain = strip_timestamps(transcript.content)
+        parts.append("### Transcript\n")
+        parts.append(plain)
+        parts.append("\n---\n")
+
+    content = "\n".join(parts)
+
+    # Filename
+    safe_channel = re.sub(r'[<>:"/\\|?*]', "", channel.youtube_channel_name).strip()[:50]
+    filename = f"{safe_channel}_transcripts.md"
+
+    return PlainTextResponse(
+        content=content,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.post("/channels/{channel_id}/extract-all-transcripts")
 async def extract_all_channel_transcripts(
     channel_id: str,
