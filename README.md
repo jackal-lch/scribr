@@ -30,6 +30,12 @@ brew install python node ffmpeg
 sudo apt install python3.11 python3.11-venv nodejs npm ffmpeg
 ```
 
+**Windows:**
+```powershell
+winget install Python.Python.3.11 OpenJS.NodeJS Gyan.FFmpeg
+```
+> **Note:** You may need to allow script execution first: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
 ## Quick Start
 
 ```bash
@@ -41,8 +47,11 @@ cd scribr
 cp backend/.env.example backend/.env
 # Edit backend/.env and add your YOUTUBE_API_KEY
 
-# Run
+# Run (macOS/Linux)
 ./start.sh
+
+# Run (Windows PowerShell)
+.\start.ps1
 ```
 
 The startup script handles virtual environment setup, dependency installation, and launches both servers.
@@ -120,7 +129,8 @@ scribr/
 │       ├── components/
 │       ├── pages/
 │       └── api/
-└── start.sh
+├── start.sh                # Launch script (macOS/Linux)
+└── start.ps1               # Launch script (Windows)
 ```
 
 ## Troubleshooting
