@@ -20,6 +20,26 @@ Test-Command "python" "winget install Python.Python.3.11"
 Test-Command "node" "winget install OpenJS.NodeJS"
 Test-Command "ffmpeg" "winget install Gyan.FFmpeg"
 
+# Check Python version (3.11+)
+python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    $pyVer = (python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')") 2>$null
+    if (-not $pyVer) { $pyVer = "unknown" }
+    Write-Color Red "Error: Python 3.11+ required, found $pyVer."
+    Write-Host "Install with: winget install Python.Python.3.11"
+    exit 1
+}
+
+# Check Node version (18+)
+$nodeMajor = (node -p "process.versions.node.split('.')[0]") 2>$null
+if (-not $nodeMajor -or [int]$nodeMajor -lt 18) {
+    $nodeVer = (node -v) 2>$null
+    if (-not $nodeVer) { $nodeVer = "unknown" }
+    Write-Color Red "Error: Node 18+ required, found $nodeVer."
+    Write-Host "Install with: winget install OpenJS.NodeJS"
+    exit 1
+}
+
 # Check for .env file
 if (-not (Test-Path "backend\.env")) {
     Write-Color Yellow "No backend\.env file found."
@@ -31,6 +51,27 @@ if (-not (Test-Path "backend\.env")) {
     Write-Host "Then run .\start.ps1 again."
     exit 1
 }
+
+# Verify YOUTUBE_API_KEY is filled in
+$apiKeyLine = (Get-Content "backend\.env" | Where-Object { $_ -match "^YOUTUBE_API_KEY=" } | Select-Object -First 1)
+if (-not $apiKeyLine -or $apiKeyLine -eq "YOUTUBE_API_KEY=" -or $apiKeyLine -eq "YOUTUBE_API_KEY=your-youtube-api-key") {
+    Write-Color Red "Error: YOUTUBE_API_KEY in backend\.env is not set."
+    Write-Host "Edit backend\.env and add your YouTube Data API key."
+    Write-Host "Get one at: https://console.cloud.google.com/"
+    exit 1
+}
+
+# Check ports are free
+function Test-Port($port) {
+    $inUse = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($inUse) {
+        Write-Color Red "Error: Port $port is already in use."
+        Write-Host "Find process: Get-NetTCPConnection -LocalPort $port"
+        exit 1
+    }
+}
+Test-Port 8000
+Test-Port 5173
 
 Write-Color Green "Starting Scribr..."
 

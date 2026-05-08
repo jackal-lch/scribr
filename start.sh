@@ -23,6 +23,23 @@ check_command python3 "brew install python (macOS) or apt install python3 (Linux
 check_command node "brew install node (macOS) or apt install nodejs (Linux)"
 check_command ffmpeg "brew install ffmpeg (macOS) or apt install ffmpeg (Linux)"
 
+# Check Python version (3.11+)
+if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+    PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "unknown")
+    echo -e "${RED}Error: Python 3.11+ required, found $PY_VER.${NC}"
+    echo "Install with: brew install python@3.11 (macOS) or apt install python3.11 (Linux)"
+    exit 1
+fi
+
+# Check Node version (18+)
+NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null)
+if [ -z "$NODE_MAJOR" ] || [ "$NODE_MAJOR" -lt 18 ]; then
+    NODE_VER=$(node -v 2>/dev/null || echo "unknown")
+    echo -e "${RED}Error: Node 18+ required, found $NODE_VER.${NC}"
+    echo "Install with: brew install node (macOS) or use nvm"
+    exit 1
+fi
+
 # Check for .env file
 if [ ! -f "backend/.env" ]; then
     echo -e "${YELLOW}No backend/.env file found.${NC}"
@@ -31,7 +48,16 @@ if [ ! -f "backend/.env" ]; then
     echo -e "${YELLOW}Please edit backend/.env and add your YOUTUBE_API_KEY${NC}"
     echo "Get one at: https://console.cloud.google.com/"
     echo ""
-    echo "Then run ./dev.sh again."
+    echo "Then run ./start.sh again."
+    exit 1
+fi
+
+# Verify YOUTUBE_API_KEY is filled in
+API_KEY_LINE=$(grep "^YOUTUBE_API_KEY=" backend/.env || true)
+if [ -z "$API_KEY_LINE" ] || [ "$API_KEY_LINE" = "YOUTUBE_API_KEY=" ] || [ "$API_KEY_LINE" = "YOUTUBE_API_KEY=your-youtube-api-key" ]; then
+    echo -e "${RED}Error: YOUTUBE_API_KEY in backend/.env is not set.${NC}"
+    echo "Edit backend/.env and add your YouTube Data API key."
+    echo "Get one at: https://console.cloud.google.com/"
     exit 1
 fi
 
@@ -45,6 +71,18 @@ cleanup() {
 }
 
 trap cleanup SIGINT SIGTERM
+
+# Check ports are free
+check_port() {
+    local port=$1
+    if command -v lsof >/dev/null 2>&1 && lsof -iTCP:$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        echo -e "${RED}Error: Port $port is already in use.${NC}"
+        echo "Find the process: lsof -iTCP:$port -sTCP:LISTEN"
+        exit 1
+    fi
+}
+check_port 8000
+check_port 5173
 
 echo -e "${GREEN}Starting Scribr...${NC}"
 
@@ -67,7 +105,9 @@ pip install --progress-bar on -r requirements.txt
 # Install mlx-whisper on macOS Apple Silicon (faster local transcription)
 if [[ "$(uname)" == "Darwin" && "$(uname -m)" == "arm64" ]]; then
     echo "Installing mlx-whisper for Apple Silicon..."
-    pip install -q mlx-whisper
+    if ! pip install mlx-whisper; then
+        echo -e "${YELLOW}Warning: mlx-whisper install failed. Falling back to faster-whisper (slower).${NC}"
+    fi
 fi
 
 # Start backend (SQLite DB is created automatically)
