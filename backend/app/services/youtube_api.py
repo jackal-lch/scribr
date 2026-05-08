@@ -15,6 +15,30 @@ from app.utils.youtube_parser import extract_channel_identifier
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 
 
+class YouTubeAPIError(Exception):
+    """Raised when the YouTube Data API returns an error or is misconfigured."""
+
+    def __init__(self, message: str, status_code: int = 0):
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+def _raise_for_status(resp: httpx.Response, operation: str) -> None:
+    """Raise YouTubeAPIError with the upstream Google error message on non-200."""
+    if resp.status_code == 200:
+        return
+    detail = f"YouTube API error during {operation} (HTTP {resp.status_code})"
+    try:
+        err = resp.json().get("error", {})
+        api_msg = err.get("message")
+        if api_msg:
+            detail = f"YouTube API: {api_msg}"
+    except Exception:
+        pass
+    raise YouTubeAPIError(detail, status_code=resp.status_code)
+
+
 class ChannelInfo:
     def __init__(
         self,
@@ -77,7 +101,7 @@ def _get_api_key() -> str:
     """Get YouTube API key from settings."""
     settings = get_settings()
     if not settings.youtube_api_key:
-        raise ValueError("YOUTUBE_API_KEY not configured")
+        raise YouTubeAPIError("YOUTUBE_API_KEY not configured in backend/.env")
     return settings.youtube_api_key
 
 
@@ -145,11 +169,10 @@ async def _resolve_channel_id(identifier: dict, api_key: str) -> Optional[str]:
                     'key': api_key,
                 }
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                items = data.get('items', [])
-                if items:
-                    return items[0]['id']
+            _raise_for_status(resp, "channel handle lookup")
+            items = resp.json().get('items', [])
+            if items:
+                return items[0]['id']
 
         # Fallback: search for the channel
         search_query = value.lstrip('@')
@@ -163,11 +186,10 @@ async def _resolve_channel_id(identifier: dict, api_key: str) -> Optional[str]:
                 'key': api_key,
             }
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            items = data.get('items', [])
-            if items:
-                return items[0]['id']['channelId']
+        _raise_for_status(resp, "channel search")
+        items = resp.json().get('items', [])
+        if items:
+            return items[0]['id']['channelId']
 
     return None
 
@@ -182,10 +204,7 @@ async def get_channel_info(url: str) -> Optional[ChannelInfo]:
     Returns:
         ChannelInfo object or None if channel not found
     """
-    try:
-        api_key = _get_api_key()
-    except ValueError:
-        return None
+    api_key = _get_api_key()
 
     # Parse the URL to get identifier
     identifier = extract_channel_identifier(url)
@@ -208,8 +227,7 @@ async def get_channel_info(url: str) -> Optional[ChannelInfo]:
             }
         )
 
-        if resp.status_code != 200:
-            return None
+        _raise_for_status(resp, "channel details lookup")
 
         data = resp.json()
         items = data.get('items', [])
@@ -269,10 +287,7 @@ async def get_channel_videos(channel_id: str, limit: int = 500) -> list[VideoInf
     import logging
     logger = logging.getLogger(__name__)
 
-    try:
-        api_key = _get_api_key()
-    except ValueError:
-        return []
+    api_key = _get_api_key()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         # Step 1: Get the uploads playlist ID
@@ -285,9 +300,7 @@ async def get_channel_videos(channel_id: str, limit: int = 500) -> list[VideoInf
             }
         )
 
-        if resp.status_code != 200:
-            logger.error(f"Failed to get channel info: {resp.status_code}")
-            return []
+        _raise_for_status(resp, "channel uploads playlist lookup")
 
         data = resp.json()
         items = data.get('items', [])
@@ -331,9 +344,7 @@ async def get_channel_videos(channel_id: str, limit: int = 500) -> list[VideoInf
                 params=params,
             )
 
-            if resp.status_code != 200:
-                logger.error(f"Playlist fetch failed: {resp.status_code} - {resp.text}")
-                break
+            _raise_for_status(resp, "playlist items fetch")
 
             data = resp.json()
 
@@ -371,9 +382,7 @@ async def get_channel_videos(channel_id: str, limit: int = 500) -> list[VideoInf
                 }
             )
 
-            if resp.status_code != 200:
-                logger.error(f"Videos batch fetch failed: {resp.status_code}")
-                continue
+            _raise_for_status(resp, "video details batch fetch")
 
             data = resp.json()
 

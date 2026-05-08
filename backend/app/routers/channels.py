@@ -24,7 +24,7 @@ from app.dependencies import CurrentUser
 from app.models.channel import Channel
 from app.models.video import Video
 from app.schemas.channel import ChannelCreate, ChannelUpdate, ChannelResponse, ChannelPreview
-from app.services.youtube_api import get_channel_info
+from app.services.youtube_api import get_channel_info, YouTubeAPIError
 
 router = APIRouter()
 
@@ -85,7 +85,10 @@ async def add_channel(
 ):
     """Add a YouTube channel."""
     # Get channel info from YouTube
-    channel_info = await get_channel_info(channel_data.url)
+    try:
+        channel_info = await get_channel_info(channel_data.url)
+    except YouTubeAPIError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=e.message)
     if not channel_info:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -142,7 +145,10 @@ async def preview_channel(
     current_user: CurrentUser,
 ):
     """Preview channel info before adding (validates URL and shows channel details)."""
-    channel_info = await get_channel_info(url)
+    try:
+        channel_info = await get_channel_info(url)
+    except YouTubeAPIError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=e.message)
     if not channel_info:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

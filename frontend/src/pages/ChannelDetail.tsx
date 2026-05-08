@@ -140,8 +140,8 @@ export default function ChannelDetail() {
         toast.info('No new videos found');
       }
     },
-    onError: () => {
-      toast.error('Failed to fetch videos');
+    onError: (err: any) => {
+      toast.error(err.response?.data?.detail || 'Failed to fetch videos');
     },
   });
 

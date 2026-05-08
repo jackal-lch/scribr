@@ -33,7 +33,7 @@ from app.schemas.video import (
     FetchVideosRequest,
     FetchVideosResponse,
 )
-from app.services.youtube_api import get_channel_videos
+from app.services.youtube_api import get_channel_videos, YouTubeAPIError
 from app.services.transcript import extract_transcript, extract_transcript_caption_only, TranscriptionError
 from app.services.user_settings import get_cookies_browser
 from app.config import get_settings
@@ -587,7 +587,10 @@ async def fetch_channel_videos(
     channel = await verify_channel_ownership(channel_id, current_user, db)
 
     # Fetch videos from YouTube using channel ID
-    video_infos = await get_channel_videos(channel.youtube_channel_id, limit=request.limit)
+    try:
+        video_infos = await get_channel_videos(channel.youtube_channel_id, limit=request.limit)
+    except YouTubeAPIError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=e.message)
 
     # Get existing video IDs (check globally since youtube_video_id has a unique constraint)
     existing_result = await db.execute(
